@@ -1,0 +1,7 @@
+{
+  "title": "KOF → TXT (v1)",
+  "url": "https://effortless-florentine-eb69ac.netlify.app/index.html",
+  "description": "Konverterer .kof-filer til .txt for Trimble Access",
+  "enabled": true,
+  "accessToken": true
+}

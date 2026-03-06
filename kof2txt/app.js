@@ -138,7 +138,7 @@ async function proxyFetchJson(url, opts) {
 async function tryConnectWorkspace() {
   API = await TrimbleConnectWorkspace.connect(
     window.parent,
-    (event, args) => {
+    async (event, args) => {
       if (event === "extension.accessToken") {
         const tok = args?.data?.accessToken || args?.data || args?.accessToken;
         if (isJwtLike(tok)) {
@@ -147,9 +147,27 @@ async function tryConnectWorkspace() {
           setStatus("Access token mottatt ✅", "ok");
         }
       }
+
+      if (event === "extension.command") {
+        appendPreview("extension.command:\n" + safeJson(args));
+      }
     },
     30000
   );
+
+  // 👇 DETTE ER DET VIKTIGE SOM GJØR AT DEN SYNS I VENSTRESIDEN
+  await API.ui.setMenu({
+    title: "KOF → TXT",
+    command: "kof2txt_main",
+    subMenus: [
+      {
+        title: "Konverter .kof → .txt",
+        command: "kof2txt_convert"
+      }
+    ]
+  });
+
+  await API.ui.setActiveMenuItem("kof2txt_convert");
 
   PROJECT_INFO = await API.project.getProject();
   appendPreview("projectInfo:\n" + safeJson(PROJECT_INFO));

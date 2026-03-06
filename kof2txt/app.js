@@ -31,7 +31,11 @@ function appendPreview(text) {
 }
 
 function safeJson(x) {
-  try { return JSON.stringify(x, null, 2); } catch { return String(x); }
+  try {
+    return JSON.stringify(x, null, 2);
+  } catch {
+    return String(x);
+  }
 }
 
 function isJwtLike(s) {
@@ -51,16 +55,23 @@ function downloadText(filename, text) {
 }
 
 // --------------------
-// KOF → TXT (05-linjer): id,nord,øst,høyde
+// KOF -> TXT
+// Output: punktId,nord,øst,høyde
 // --------------------
 function parseKofLine(line) {
   const cleaned = (line || "").trim();
   if (!cleaned) return null;
+
   const parts = cleaned.split(/\s+/).filter(Boolean);
   if (parts.length < 5) return null;
   if (parts[0] !== "05") return null;
 
-  return { pointId: parts[1], north: parts[2], east: parts[3], height: parts[4] };
+  return {
+    pointId: parts[1],
+    north: parts[2],
+    east: parts[3],
+    height: parts[4],
+  };
 }
 
 function kofToCsv4(kofText) {
@@ -74,17 +85,21 @@ function kofToCsv4(kofText) {
 }
 
 // --------------------
-// Region → Core API base
+// TC region -> API base
 // --------------------
 function getTcApiBase(location) {
   const loc = (location || "").toLowerCase();
-  if (loc.includes("europe") || loc === "eu") return "https://app21.connect.trimble.com/tc/api/2.0";
-  if (loc.includes("asia") || loc === "ap" || loc === "apac") return "https://app31.connect.trimble.com/tc/api/2.0";
+  if (loc.includes("europe") || loc === "eu") {
+    return "https://app21.connect.trimble.com/tc/api/2.0";
+  }
+  if (loc.includes("asia") || loc === "ap" || loc === "apac") {
+    return "https://app31.connect.trimble.com/tc/api/2.0";
+  }
   return "https://app.connect.trimble.com/tc/api/2.0";
 }
 
 // --------------------
-// Proxy fetch via Netlify Function (unngår CORS)
+// Proxy calls via Netlify Function
 // --------------------
 async function proxyFetchText(url, { method = "GET", headers = {}, body = undefined } = {}) {
   const res = await fetch("/.netlify/functions/tc-proxy", {
@@ -100,41 +115,25 @@ async function proxyFetchText(url, { method = "GET", headers = {}, body = undefi
   });
 
   const text = await res.text();
+
   if (!res.ok) {
-    throw new Error(`Proxy HTTP ${res.status}\nURL: ${url}\nBody: ${text.slice(0, 2000)}`);
+    throw new Error(`Proxy HTTP ${res.status}\nURL: ${url}\nBody:\n${text.slice(0, 2000)}`);
   }
+
   return text;
 }
 
 async function proxyFetchJson(url, opts) {
   const text = await proxyFetchText(url, opts);
-  try { return JSON.parse(text); } catch { return text; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 // --------------------
-// Lokal konvertering
-// --------------------
-async function handleConvertClick() {
-  const files = els.fileInput?.files;
-  if (!files || files.length === 0) {
-    setStatus("Velg minst én .kof-fil først.", "err");
-    return;
-  }
-  setStatus(`Konverterer ${files.length} fil(er) lokalt...`, "muted");
-
-  for (const f of files) {
-    const text = await f.text();
-    const csv = kofToCsv4(text);
-    const baseName = f.name.replace(/\.[^.]+$/, "");
-    downloadText(`${baseName}.txt`, csv);
-    if (files.length === 1) showPreview(csv.slice(0, 2500));
-  }
-
-  setStatus("Ferdig (lokal konvertering).", "ok");
-}
-
-// --------------------
-// Workspace init + token
+// Workspace / token
 // --------------------
 async function tryConnectWorkspace() {
   API = await TrimbleConnectWorkspace.connect(
@@ -161,22 +160,36 @@ async function requestAccessToken() {
   if (ACCESS_TOKEN) return ACCESS_TOKEN;
 
   setStatus("Ber om access token...", "muted");
+  appendPreview("Sender requestPermission('accesstoken') ...");
+
   const ret = await API.extension.requestPermission("accesstoken");
 
-  // noen ganger kommer token direkte her
-  if (isJwtLike(ret)) {
-    ACCESS_TOKEN = ret;
+  const maybeTok =
+    ret?.accessToken ||
+    ret?.data?.accessToken ||
+    ret?.data ||
+    ret;
+
+  if (isJwtLike(maybeTok)) {
+    ACCESS_TOKEN = maybeTok;
     appendPreview(`✅ ACCESS TOKEN (requestPermission()) mottatt.\nLengde: ${ACCESS_TOKEN.length}\nStarter med: ${ACCESS_TOKEN.slice(0, 20)}...`);
     return ACCESS_TOKEN;
   }
 
-  // ellers vent litt på event
   appendPreview("Venter på extension.accessToken-event...");
+
   const tok = await new Promise((resolve, reject) => {
     const t0 = Date.now();
     const timer = setInterval(() => {
-      if (ACCESS_TOKEN) { clearInterval(timer); resolve(ACCESS_TOKEN); }
-      if (Date.now() - t0 > 15000) { clearInterval(timer); reject(new Error("Token event kom ikke innen 15 sek")); }
+      if (ACCESS_TOKEN) {
+        clearInterval(timer);
+        resolve(ACCESS_TOKEN);
+        return;
+      }
+      if (Date.now() - t0 > 15000) {
+        clearInterval(timer);
+        reject(new Error("Token event kom ikke innen 15 sek"));
+      }
     }, 250);
   });
 
@@ -184,20 +197,52 @@ async function requestAccessToken() {
 }
 
 // --------------------
-// Prosjekt: liste filer (Core API via proxy)
+// Local convert
+// --------------------
+async function handleConvertClick() {
+  const files = els.fileInput?.files;
+  if (!files || files.length === 0) {
+    setStatus("Velg minst én .kof-fil først.", "err");
+    return;
+  }
+
+  setStatus(`Konverterer ${files.length} fil(er) lokalt...`, "muted");
+
+  for (const f of files) {
+    const text = await f.text();
+    const csv = kofToCsv4(text);
+    const baseName = f.name.replace(/\.[^.]+$/, "");
+    downloadText(`${baseName}.txt`, csv);
+    if (files.length === 1) {
+      showPreview(csv.slice(0, 2500));
+    }
+  }
+
+  setStatus("Ferdig (lokal konvertering).", "ok");
+}
+
+// --------------------
+// Project listing helpers
 // --------------------
 async function getProjectRootId(apiBase, projectId) {
   const p = await proxyFetchJson(`${apiBase}/projects/${encodeURIComponent(projectId)}`);
   const rootId = p?.rootId || p?.data?.rootId || p?.rootFolderId;
-  if (!rootId) throw new Error("Fant ikke rootId i prosjekt-respons:\n" + safeJson(p));
+
+  if (!rootId) {
+    throw new Error("Fant ikke rootId i prosjekt-respons:\n" + safeJson(p));
+  }
+
   return rootId;
 }
 
 async function listChildren(apiBase, parentId) {
   const r = await proxyFetchJson(`${apiBase}/files?parentId=${encodeURIComponent(parentId)}`);
+
   if (Array.isArray(r)) return r;
   if (Array.isArray(r?.items)) return r.items;
   if (Array.isArray(r?.data)) return r.data;
+
+  appendPreview("Uventet respons fra listChildren:\n" + safeJson(r));
   return [];
 }
 
@@ -212,14 +257,18 @@ function isKofFile(item) {
 
 async function listKofFilesRecursive(apiBase, folderId, acc = []) {
   const children = await listChildren(apiBase, folderId);
+
   for (const it of children) {
     if (isFolder(it)) {
-      const id = it?.id || it?.folderId;
-      if (id) await listKofFilesRecursive(apiBase, id, acc);
-    } else {
-      if (isKofFile(it)) acc.push(it);
+      const childId = it?.id || it?.folderId;
+      if (childId) {
+        await listKofFilesRecursive(apiBase, childId, acc);
+      }
+    } else if (isKofFile(it)) {
+      acc.push(it);
     }
   }
+
   return acc;
 }
 
@@ -227,14 +276,23 @@ async function getDownloadUrl(apiBase, fileItem) {
   if (fileItem?.downloadUrl) return fileItem.downloadUrl;
 
   const fileId = fileItem?.id || fileItem?.fileId;
-  if (!fileId) throw new Error("Mangler fileId:\n" + safeJson(fileItem));
+  if (!fileId) {
+    throw new Error("Fant ikke fileId på filobjekt:\n" + safeJson(fileItem));
+  }
 
   const meta = await proxyFetchJson(`${apiBase}/files/${encodeURIComponent(fileId)}`);
   const url = meta?.downloadUrl || meta?.data?.downloadUrl;
-  if (!url) throw new Error("Fant ikke downloadUrl i metadata:\n" + safeJson(meta));
+
+  if (!url) {
+    throw new Error("Fant ikke downloadUrl i metadata:\n" + safeJson(meta));
+  }
+
   return url;
 }
 
+// --------------------
+// Convert all .kof in project
+// --------------------
 async function handleConvertProjectClick() {
   try {
     if (!API || !PROJECT_INFO?.id) {
@@ -251,7 +309,7 @@ async function handleConvertProjectClick() {
     const rootId = await getProjectRootId(apiBase, PROJECT_INFO.id);
     appendPreview(`rootId: ${rootId}`);
 
-    setStatus("Lister .kof-filer rekursivt...", "muted");
+    setStatus("Lister .kof-filer i prosjektet...", "muted");
     const kofFiles = await listKofFilesRecursive(apiBase, rootId);
     appendPreview(`Fant ${kofFiles.length} .kof-fil(er).`);
 
@@ -260,32 +318,32 @@ async function handleConvertProjectClick() {
       return;
     }
 
-    setStatus(`Konverterer ${kofFiles.length} fil(er) ...`, "muted");
+    let done = 0;
 
-    let i = 0;
     for (const f of kofFiles) {
-      i++;
-      const name = f?.name || f?.fileName || `file_${f?.id || ""}.kof`;
-      appendPreview(`\n---\n🔽 ${name} (${i}/${kofFiles.length})`);
+      done += 1;
+
+      const name = f?.name || f?.fileName || `file_${done}.kof`;
+      appendPreview(`\n---\n🔽 ${name} (${done}/${kofFiles.length})`);
 
       const dlUrl = await getDownloadUrl(apiBase, f);
-
-      // Last ned KOF via proxy (også for presigned URL hvis den ligger på connect-host)
       const kofText = await proxyFetchText(dlUrl, { method: "GET" });
       const txt = kofToCsv4(kofText);
 
-      const base = name.replace(/\.[^.]+$/, "");
-      const outName = `${base}.txt`;
+      const baseName = name.replace(/\.[^.]+$/, "");
+      const outName = `${baseName}.txt`;
 
-      // Fase 1: last ned lokalt (nå skal dette i det minste fungere stabilt)
       downloadText(outName, txt);
 
-      if (i === 1) showPreview(txt.slice(0, 2500));
-      setStatus(`Ferdig ${i}/${kofFiles.length} ...`, "muted");
+      if (done === 1) {
+        showPreview(txt.slice(0, 2500));
+      }
+
+      setStatus(`Konvertert ${done}/${kofFiles.length} ...`, "muted");
     }
 
-    setStatus(`Ferdig! Konverterte ${kofFiles.length} filer (lastet ned lokalt).`, "ok");
-    appendPreview("\n✅ Neste steg: vi endrer dette til opplasting tilbake til prosjektet.");
+    setStatus(`Ferdig! Konverterte ${done} .kof-fil(er) og lastet ned .txt lokalt.`, "ok");
+    appendPreview("\n✅ Neste steg er å laste opp .txt tilbake til prosjektet.");
 
   } catch (e) {
     console.error(e);
@@ -294,10 +352,17 @@ async function handleConvertProjectClick() {
   }
 }
 
-// ---- Boot ----
+// --------------------
+// Boot
+// --------------------
 (async function main() {
-  if (els.btnConvert) els.btnConvert.addEventListener("click", handleConvertClick);
-  if (els.btnConvertProject) els.btnConvertProject.addEventListener("click", handleConvertProjectClick);
+  if (els.btnConvert) {
+    els.btnConvert.addEventListener("click", handleConvertClick);
+  }
+
+  if (els.btnConvertProject) {
+    els.btnConvertProject.addEventListener("click", handleConvertProjectClick);
+  }
 
   try {
     await tryConnectWorkspace();

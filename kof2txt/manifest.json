@@ -1,6 +1,7 @@
 {
   "title": "KOF → TXT (v1)",
-  "url": "https://effortless-florentine-eb69ac.netlify.app/index.html",
+  "url": "https://kof2txt.netlify.app/index.html",
+  "icon": "https://kof2txt.netlify.app/icon.png",
   "description": "Konverterer .kof-filer til .txt for Trimble Access",
   "enabled": true,
   "accessToken": true

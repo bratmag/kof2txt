@@ -1,6 +1,6 @@
 {
-  "title": "KOF → TXT (v1)",
+  "title": "KOF DEBUG",
   "url": "https://kof2txt.netlify.app/index.html",
-  "description": "Konverterer .kof-filer til .txt for Trimble Access",
+  "description": "Debug extension for Trimble Connect",
   "enabled": true
 }

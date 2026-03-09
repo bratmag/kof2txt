@@ -8,13 +8,9 @@ function setStatus(text) {
 }
 
 function setOutput(obj) {
-  if (outputEl) {
-    if (typeof obj === "string") {
-      outputEl.textContent = obj;
-    } else {
-      outputEl.textContent = JSON.stringify(obj, null, 2);
-    }
-  }
+  if (!outputEl) return;
+  outputEl.textContent =
+    typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
 }
 
 (async function main() {
@@ -28,6 +24,40 @@ function setOutput(obj) {
       },
       30000
     );
+
+    console.log("API object:", API);
+    console.log("API keys:", Object.keys(API || {}));
+    console.log("API.ui:", API?.ui);
+    console.log("API.project:", API?.project);
+    console.log("API.extension:", API?.extension);
+
+    // Vis dette i UI også
+    setOutput({
+      connected: true,
+      apiKeys: Object.keys(API || {}),
+      hasUi: !!API?.ui,
+      hasProject: !!API?.project,
+      hasExtension: !!API?.extension
+    });
+
+    // Test prosjekt først, før ui.setMenu
+    let project = null;
+    if (API?.project?.getProject) {
+      project = await API.project.getProject();
+      console.log("Project:", project);
+    }
+
+    if (!API?.ui?.setMenu) {
+      setStatus("Koblet, men API.ui.setMenu finnes ikke");
+      setOutput({
+        connected: true,
+        project,
+        apiKeys: Object.keys(API || {}),
+        hasUi: !!API?.ui,
+        uiKeys: API?.ui ? Object.keys(API.ui) : []
+      });
+      return;
+    }
 
     setStatus("Koblet. Setter meny...");
 
@@ -44,17 +74,17 @@ function setOutput(obj) {
 
     await API.ui.setActiveMenuItem("kof_debug_open");
 
-    const project = await API.project.getProject();
-
     setStatus("Meny satt OK");
     setOutput({
       message: "KOF DEBUG er lastet",
       project
     });
-
   } catch (err) {
     console.error(err);
     setStatus("Feil");
-    setOutput(String(err));
+    setOutput({
+      error: String(err),
+      stack: err?.stack || null
+    });
   }
 })();

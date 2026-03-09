@@ -39,56 +39,20 @@ async function getAccessToken(API) {
   return null;
 }
 
-function normalizeLocation(value) {
-  return String(value || "").trim().toLowerCase();
+function normalizeRegion(location) {
+  const value = String(location || "").trim().toLowerCase();
+
+  if (!value) return "europe";
+  if (value === "eu") return "europe";
+  if (value === "us" || value === "usa" || value === "northamerica") return "us";
+  if (value === "asia" || value === "apac") return "asia";
+
+  return value;
 }
 
-function pickRegionByProjectLocation(regions, projectLocation) {
-  const wanted = normalizeLocation(projectLocation);
-
-  if (!Array.isArray(regions) || regions.length === 0) {
-    return null;
-  }
-
-  return (
-    regions.find((r) => normalizeLocation(r.name) === wanted) ||
-    regions.find((r) => normalizeLocation(r.location) === wanted) ||
-    regions.find((r) => normalizeLocation(r.region) === wanted) ||
-    regions.find((r) => normalizeLocation(r.id) === wanted) ||
-    regions.find((r) => normalizeLocation(r.name).includes(wanted)) ||
-    regions.find((r) => normalizeLocation(r.location).includes(wanted)) ||
-    null
-  );
-}
-
-function collectCandidateOrigins(region) {
-  const values = [
-    region?.origin,
-    region?.api,
-    region?.apiOrigin,
-    region?.core,
-    region?.coreOrigin,
-    region?.baseUrl,
-    region?.baseURL,
-    region?.url
-  ].filter(Boolean);
-
-  return [...new Set(values)];
-}
-
-function buildListCandidates(origin, projectId) {
-  const base = String(origin || "").replace(/\/+$/, "");
-
-  return [
-    `${base}/projects/${projectId}/files`,
-    `${base}/project/${projectId}/files`,
-    `${base}/connect/projects/${projectId}/files`,
-    `${base}/connect/project/${projectId}/files`,
-    `${base}/v1/projects/${projectId}/files`,
-    `${base}/v1/project/${projectId}/files`,
-    `${base}/files?projectId=${encodeURIComponent(projectId)}`,
-    `${base}/connect/files?projectId=${encodeURIComponent(projectId)}`
-  ];
+function getRegionalBaseUrl(project) {
+  const region = normalizeRegion(project?.location);
+  return `https://${region}.connect.trimble.com`;
 }
 
 function isObject(value) {
@@ -182,89 +146,71 @@ async function fetchJson(url, token) {
   };
 }
 
+function buildFileListCandidates(baseUrl, projectId) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+
+  // Dette er bevisst en diagnostisk liste.
+  // Vi vet region-hosten er riktig spor, men vi lar appen prøve flere
+  // sannsynlige paths og vise hva som faktisk svarer.
+  return [
+    `${base}/tc/api/projects/${projectId}/files`,
+    `${base}/tc/api/project/${projectId}/files`,
+    `${base}/api/projects/${projectId}/files`,
+    `${base}/api/project/${projectId}/files`,
+    `${base}/projects/${projectId}/files`,
+    `${base}/project/${projectId}/files`,
+    `${base}/tc/api/files?projectId=${encodeURIComponent(projectId)}`,
+    `${base}/api/files?projectId=${encodeURIComponent(projectId)}`
+  ];
+}
+
 async function listKofFilesDirect(project, accessToken) {
-  setStatus("Oppdager region...");
-
-  const regionDiscovery = await fetchJson(
-    "https://api.connect.trimble.com/regions",
-    accessToken
-  );
-
-  if (!regionDiscovery.ok) {
-    throw new Error(
-      `Region discovery feilet (${regionDiscovery.status}): ${regionDiscovery.text.slice(0, 300)}`
-    );
-  }
-
-  const regionPayload = regionDiscovery.json;
-  const regions = Array.isArray(regionPayload)
-    ? regionPayload
-    : Array.isArray(regionPayload?.items)
-    ? regionPayload.items
-    : Array.isArray(regionPayload?.regions)
-    ? regionPayload.regions
-    : [];
-
-  const matchedRegion = pickRegionByProjectLocation(regions, project.location);
-
-  if (!matchedRegion) {
-    throw new Error(
-      `Fant ikke regionmatch for project.location=${project.location}`
-    );
-  }
-
-  const origins = collectCandidateOrigins(matchedRegion);
-
-  if (origins.length === 0) {
-    throw new Error("Matchet region hadde ingen brukbar origin/baseUrl.");
-  }
+  const baseUrl = getRegionalBaseUrl(project);
 
   const diagnostics = {
+    baseUrl,
     projectId: project.id,
     projectLocation: project.location,
-    matchedRegion,
     tried: []
   };
 
   setStatus("Henter filliste...");
 
-  for (const origin of origins) {
-    const urls = buildListCandidates(origin, project.id);
+  const urls = buildFileListCandidates(baseUrl, project.id);
 
-    for (const url of urls) {
-      try {
-        const result = await fetchJson(url, accessToken);
+  for (const url of urls) {
+    try {
+      const result = await fetchJson(url, accessToken);
 
-        diagnostics.tried.push({
-          url,
-          status: result.status,
-          ok: result.ok,
-          preview: result.json || result.text.slice(0, 300)
-        });
+      diagnostics.tried.push({
+        url,
+        status: result.status,
+        ok: result.ok,
+        preview: result.json || result.text.slice(0, 300)
+      });
 
-        if (!result.ok) {
-          continue;
-        }
-
-        const list = flattenPossibleFileList(result.json);
-        const files = list.map(mapFile);
-        const kofFiles = files.filter(isKofFile);
-
-        return {
-          ok: true,
-          usedUrl: url,
-          matchedRegion,
-          totalFilesSeen: files.length,
-          kofFiles,
-          diagnostics
-        };
-      } catch (err) {
-        diagnostics.tried.push({
-          url,
-          ok: false,
-          error: String(err?.message || err)
-        });
+      if (!result.ok) {
+        continue;
       }
+
+      const list = flattenPossibleFileList(result.json);
+      const files = list.map(mapFile);
+      const kofFiles = files.filter(isKofFile);
+
+      return {
+        ok: true,
+        usedUrl: url,
+        baseUrl,
+        totalFilesSeen: files.length,
+        kofFiles,
+        diagnostics
+      };
+    } catch (err) {
+      diagnostics.tried.push({
+        url,
+        ok: false,
+        error: String(err?.message || err)
+      });
     }
   }
 
@@ -287,10 +233,22 @@ async function listKofFilesDirect(project, accessToken) {
       30000
     );
 
+    if (!API?.project?.getProject) {
+      throw new Error("API.project.getProject finnes ikke.");
+    }
+
     const project = await API.project.getProject();
 
     console.log("API keys:", Object.keys(API || {}));
     console.log("Project:", project);
+
+    if (!project?.id) {
+      throw new Error("Fant ikke prosjekt-ID.");
+    }
+
+    if (!API?.ui?.setMenu) {
+      throw new Error("API.ui.setMenu finnes ikke.");
+    }
 
     await API.ui.setMenu({
       title: "KOF2TXT",
@@ -349,6 +307,7 @@ async function listKofFilesDirect(project, accessToken) {
       ok: true,
       step: "listKofFilesDirect",
       project,
+      baseUrl: result.baseUrl,
       usedUrl: result.usedUrl,
       totalFilesSeen: result.totalFilesSeen,
       kofFiles: result.kofFiles.map((f) => ({

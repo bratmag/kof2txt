@@ -9,11 +9,23 @@ function setStatus(text) {
 }
 
 function setOutput(data) {
+  const text =
+    typeof data === "string" ? data : JSON.stringify(data, null, 2);
+
   if (outputEl) {
-    outputEl.textContent =
-      typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    outputEl.textContent = text;
   }
+
   console.log("[OUTPUT]", data);
+}
+
+function normalizeCommand(cmd) {
+  if (!cmd) return "";
+  if (typeof cmd === "string") return cmd;
+  if (typeof cmd === "object") {
+    return cmd.command || cmd.id || cmd.title || "";
+  }
+  return "";
 }
 
 async function getAccessToken(API) {
@@ -35,18 +47,13 @@ async function getAccessToken(API) {
   return null;
 }
 
-async function testProxy(projectId, accessToken, projectLocation) {
+async function callProxy(payload) {
   const res = await fetch("/.netlify/functions/tc-proxy", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      action: "debugProjectAccess",
-      projectId,
-      projectLocation,
-      token: accessToken
-    })
+    body: JSON.stringify(payload)
   });
 
   const text = await res.text();
@@ -65,36 +72,82 @@ async function testProxy(projectId, accessToken, projectLocation) {
   };
 }
 
+function extractKofSummary(proxyBody) {
+  const kofFiles = Array.isArray(proxyBody?.kofFiles) ? proxyBody.kofFiles : [];
+
+  return {
+    count: kofFiles.length,
+    files: kofFiles.map((f) => ({
+      id: f.id || null,
+      name: f.name || null,
+      path: f.path || f.fullPath || null,
+      size: f.size ?? null
+    }))
+  };
+}
+
+async function listKofFiles(project, accessToken) {
+  setStatus("Henter .kof-filer via proxy...");
+
+  const result = await callProxy({
+    action: "listKofFiles",
+    token: accessToken,
+    projectId: project.id,
+    projectLocation: project.location
+  });
+
+  return result;
+}
+
 (async function main() {
   try {
     setStatus("Kobler til Trimble Connect...");
+
+    let latestCommand = "";
 
     const API = await TrimbleConnectWorkspace.connect(
       window.parent,
       (event, args) => {
         console.log("WS EVENT:", event, args?.data || args);
+
+        if (event === "extension.command") {
+          latestCommand = normalizeCommand(args?.data);
+          console.log("Menykommando:", latestCommand);
+        }
       },
       30000
     );
+
+    if (!API?.project?.getProject) {
+      throw new Error("API.project.getProject finnes ikke.");
+    }
 
     const project = await API.project.getProject();
 
     console.log("API keys:", Object.keys(API || {}));
     console.log("Project:", project);
 
+    if (!project?.id) {
+      throw new Error("Fant ikke prosjekt-ID.");
+    }
+
+    if (!API?.ui?.setMenu) {
+      throw new Error("API.ui.setMenu finnes ikke.");
+    }
+
     await API.ui.setMenu({
       title: "KOF2TXT",
       command: "kof2txt_main",
       subMenus: [
         {
-          title: "Konverter KOF",
-          command: "kof2txt_convert"
+          title: "Finn KOF-filer",
+          command: "kof2txt_list"
         }
       ]
     });
 
     if (API.ui.setActiveMenuItem) {
-      await API.ui.setActiveMenuItem("kof2txt_convert");
+      await API.ui.setActiveMenuItem("kof2txt_list");
     }
 
     if (API.extension?.setStatusMessage) {
@@ -102,7 +155,6 @@ async function testProxy(projectId, accessToken, projectLocation) {
     }
 
     setStatus("Ber om access token...");
-
     const accessToken = await getAccessToken(API);
 
     if (!accessToken) {
@@ -110,6 +162,7 @@ async function testProxy(projectId, accessToken, projectLocation) {
       setOutput({
         ok: false,
         step: "token",
+        message: "Trimble Connect returnerte ikke access token.",
         project
       });
       return;
@@ -117,19 +170,13 @@ async function testProxy(projectId, accessToken, projectLocation) {
 
     console.log("Access token mottatt:", true);
 
-    setStatus("Tester proxy...");
-
-    const proxyResult = await testProxy(
-      project.id,
-      accessToken,
-      project.location
-    );
+    const proxyResult = await listKofFiles(project, accessToken);
 
     if (!proxyResult.ok) {
       setStatus(`Proxy-feil (${proxyResult.status})`);
       setOutput({
         ok: false,
-        step: "proxy",
+        step: "listKofFiles",
         project,
         proxyStatus: proxyResult.status,
         proxyResponse: proxyResult.body
@@ -137,14 +184,24 @@ async function testProxy(projectId, accessToken, projectLocation) {
       return;
     }
 
-    setStatus("Proxy-test OK");
+    const summary = extractKofSummary(proxyResult.body);
+
+    setStatus(
+      summary.count > 0
+        ? `Fant ${summary.count} .kof-fil(er)`
+        : "Fant ingen .kof-filer"
+    );
+
     setOutput({
       ok: true,
-      step: "proxy-test-ok",
+      step: "listKofFiles",
       project,
-      proxyStatus: proxyResult.status,
-      proxyResponse: proxyResult.body
+      summary,
+      diagnostics: proxyResult.body?.diagnostics || null
     });
+
+    // Dersom bruker trykker meny på nytt senere, kan vi bruke dette senere.
+    console.log("Siste kommando:", latestCommand);
   } catch (err) {
     console.error("Fatal error:", err);
     setStatus("Feil");

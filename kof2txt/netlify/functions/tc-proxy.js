@@ -8,64 +8,58 @@ exports.handler = async function (event) {
 
   try {
     const data = JSON.parse(event.body || "{}");
-    const url = data.url;
-    const token = data.token;
-    const method = data.method || "GET";
-    const body = data.body;
-
-    if (!url) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          ok: false,
-          error: "Missing url"
-        })
-      };
-    }
+    const { action, token, projectId, projectLocation } = data || {};
 
     if (!token) {
       return {
         statusCode: 400,
-        body: JSON.stringify({
-          ok: false,
-          error: "Missing token"
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: false, error: "Missing token" })
       };
     }
 
-    const headers = {
-      Authorization: "Bearer " + token,
-      Accept: "application/json"
-    };
-
-    if (body) {
-      headers["Content-Type"] = "application/json";
+    if (action !== "debugProjectAccess") {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ok: false, error: "Unknown action" })
+      };
     }
 
-    console.log("Proxy request starting");
-    console.log("Method:", method);
-    console.log("URL:", url);
+    // Midlertidig diagnose:
+    // 1) bekreft at functionen kan gjøre et eksternt kall
+    // 2) returner nok info til å se hva som feiler
+    const testUrl = "https://developer.trimble.com/docs/connect/concepts/";
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined
+    const testResponse = await fetch(testUrl, {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
     });
 
-    const text = await response.text();
-
-    console.log("Proxy response status:", response.status);
-    console.log("Proxy response preview:", text.slice(0, 500));
+    const testText = await testResponse.text();
 
     return {
-      statusCode: response.status,
+      statusCode: 200,
       headers: {
-        "Content-Type": response.headers.get("content-type") || "text/plain"
+        "Content-Type": "application/json"
       },
-      body: text
+      body: JSON.stringify({
+        ok: true,
+        message: "Netlify outbound fetch virker",
+        projectId,
+        projectLocation,
+        fetchTest: {
+          url: testUrl,
+          status: testResponse.status,
+          ok: testResponse.ok,
+          preview: testText.slice(0, 200)
+        },
+        note: "Neste steg er å erstatte hardkodet prosjekt-URL med region discovery + riktig regionalt Connect-endepunkt."
+      })
     };
   } catch (err) {
-    console.error("Proxy fetch error:", err);
     return {
       statusCode: 500,
       headers: {
@@ -74,9 +68,9 @@ exports.handler = async function (event) {
       body: JSON.stringify({
         ok: false,
         error: String(err),
-        message: err && err.message ? err.message : null,
-        cause: err && err.cause ? String(err.cause) : null,
-        stack: err && err.stack ? err.stack : null
+        message: err?.message || null,
+        cause: err?.cause ? String(err.cause) : null,
+        stack: err?.stack || null
       })
     };
   }

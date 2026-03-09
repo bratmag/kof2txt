@@ -39,22 +39,6 @@ async function getAccessToken(API) {
   return null;
 }
 
-function normalizeRegion(location) {
-  const value = String(location || "").trim().toLowerCase();
-
-  if (!value) return "europe";
-  if (value === "eu") return "europe";
-  if (value === "us" || value === "usa" || value === "northamerica") return "us";
-  if (value === "asia" || value === "apac") return "asia";
-
-  return value;
-}
-
-function getRegionalBaseUrl(project) {
-  const region = normalizeRegion(project?.location);
-  return `https://${region}.connect.trimble.com`;
-}
-
 function isObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -146,37 +130,53 @@ async function fetchJson(url, token) {
   };
 }
 
-function buildFileListCandidates(baseUrl, projectId) {
-  const base = String(baseUrl || "").replace(/\/+$/, "");
+function buildFileListCandidates(projectId) {
+  const base = "https://app.connect.trimble.com/tc/api/2.0";
 
-  // Dette er bevisst en diagnostisk liste.
-  // Vi vet region-hosten er riktig spor, men vi lar appen prøve flere
-  // sannsynlige paths og vise hva som faktisk svarer.
   return [
-    `${base}/tc/api/projects/${projectId}/files`,
-    `${base}/tc/api/project/${projectId}/files`,
-    `${base}/api/projects/${projectId}/files`,
-    `${base}/api/project/${projectId}/files`,
     `${base}/projects/${projectId}/files`,
     `${base}/project/${projectId}/files`,
-    `${base}/tc/api/files?projectId=${encodeURIComponent(projectId)}`,
-    `${base}/api/files?projectId=${encodeURIComponent(projectId)}`
+    `${base}/files?projectId=${encodeURIComponent(projectId)}`,
+    `${base}/projects/${projectId}/folders/root/files`,
+    `${base}/projects/${projectId}/documents`,
+    `${base}/projects/${projectId}/items`
   ];
 }
 
-async function listKofFilesDirect(project, accessToken) {
-  const baseUrl = getRegionalBaseUrl(project);
+async function validateToken(accessToken) {
+  const url = "https://app.connect.trimble.com/tc/api/2.0/users/me";
+  return fetchJson(url, accessToken);
+}
 
+async function listKofFilesDirect(project, accessToken) {
   const diagnostics = {
-    baseUrl,
+    tokenValidation: null,
     projectId: project.id,
     projectLocation: project.location,
     tried: []
   };
 
+  setStatus("Validerer token...");
+
+  const me = await validateToken(accessToken);
+  diagnostics.tokenValidation = {
+    url: "https://app.connect.trimble.com/tc/api/2.0/users/me",
+    status: me.status,
+    ok: me.ok,
+    preview: me.json || me.text.slice(0, 300)
+  };
+
+  if (!me.ok) {
+    return {
+      ok: false,
+      error: "Token-validering feilet",
+      diagnostics
+    };
+  }
+
   setStatus("Henter filliste...");
 
-  const urls = buildFileListCandidates(baseUrl, project.id);
+  const urls = buildFileListCandidates(project.id);
 
   for (const url of urls) {
     try {
@@ -200,7 +200,6 @@ async function listKofFilesDirect(project, accessToken) {
       return {
         ok: true,
         usedUrl: url,
-        baseUrl,
         totalFilesSeen: files.length,
         kofFiles,
         diagnostics
@@ -307,7 +306,6 @@ async function listKofFilesDirect(project, accessToken) {
       ok: true,
       step: "listKofFilesDirect",
       project,
-      baseUrl: result.baseUrl,
       usedUrl: result.usedUrl,
       totalFilesSeen: result.totalFilesSeen,
       kofFiles: result.kofFiles.map((f) => ({

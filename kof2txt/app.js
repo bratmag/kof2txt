@@ -16,7 +16,8 @@ function setOutput(data) {
     outputEl.textContent = text;
   }
 
-  console.log("[OUTPUT]", data);
+  console.log("[OUTPUT]");
+  console.log(text);
 }
 
 function normalizeCommand(cmd) {
@@ -212,3 +213,4 @@ async function listKofFiles(project, accessToken) {
     });
   }
 })();
+

@@ -1,239 +1,111 @@
+// netlify/functions/tc-proxy.js
+//
+// Støtter tre actions:
+//   1. { action: "proxy", url, token, method }
+//      → Enkel gjennomgangsproxy med Bearer token
+//
+//   2. { action: "downloadKofFile", fileId, token, projectLocation }
+//      → Fullstendig nedlastingsflyt:
+//         a) Hent metadata → versionId
+//         b) Prøv blobstore/download/content → pre-signed URL
+//         c) Hent filinnhold fra pre-signed URL (uten Auth-header)
+//         d) Returner { ok, content, diagnostics }
+//
+//   3. (ingen action / gammel kode) { url, token, method }
+//      → Bakoverkompatibel enkel proxy
+
+const TRIMBLE_HOSTS = [
+  "app.connect.trimble.com",
+  "app.eu.connect.trimble.com",
+  "app.asia.connect.trimble.com",
+  "api.connect.trimble.com"
+];
+
+function isTrimbleUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    return TRIMBLE_HOSTS.some((h) => host === h || host.endsWith("." + h));
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedUrl(url) {
+  // Tillat Trimble-domener og AWS S3 pre-signed URLer
+  try {
+    const host = new URL(url).hostname;
+    return (
+      isTrimbleUrl(url) ||
+      host.endsWith(".amazonaws.com") ||
+      host.endsWith(".s3.amazonaws.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function json(statusCode, body) {
   return {
     statusCode,
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*"
     },
     body: JSON.stringify(body, null, 2)
   };
 }
 
-function normalizeLocation(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
-
-function pickRegionByProjectLocation(regions, projectLocation) {
-  const wanted = normalizeLocation(projectLocation);
-
-  if (!Array.isArray(regions) || regions.length === 0) {
-    return null;
+function getCoreBaseUrl(projectLocation) {
+  const loc = String(projectLocation || "").toLowerCase();
+  if (loc === "europe" || loc.includes("eu")) {
+    return "https://app.eu.connect.trimble.com/tc/api/2.0";
   }
-
-  const exact =
-    regions.find((r) => normalizeLocation(r.name) === wanted) ||
-    regions.find((r) => normalizeLocation(r.location) === wanted) ||
-    regions.find((r) => normalizeLocation(r.region) === wanted) ||
-    regions.find((r) => normalizeLocation(r.id) === wanted);
-
-  if (exact) return exact;
-
-  if (wanted.includes("europe") || wanted === "eu") {
-    return (
-      regions.find((r) => normalizeLocation(r.name).includes("europe")) ||
-      regions.find((r) => normalizeLocation(r.location).includes("europe")) ||
-      null
-    );
+  if (loc === "asia") {
+    return "https://app.asia.connect.trimble.com/tc/api/2.0";
   }
-
-  if (wanted.includes("asia")) {
-    return (
-      regions.find((r) => normalizeLocation(r.name).includes("asia")) ||
-      regions.find((r) => normalizeLocation(r.location).includes("asia")) ||
-      null
-    );
-  }
-
-  if (
-    wanted.includes("us") ||
-    wanted.includes("america") ||
-    wanted.includes("north")
-  ) {
-    return (
-      regions.find((r) => normalizeLocation(r.name).includes("north")) ||
-      regions.find((r) => normalizeLocation(r.name).includes("america")) ||
-      regions.find((r) => normalizeLocation(r.location).includes("america")) ||
-      null
-    );
-  }
-
-  return null;
+  return "https://app.connect.trimble.com/tc/api/2.0";
 }
 
-function collectCandidateOrigins(region) {
-  const values = [
-    region?.origin,
-    region?.api,
-    region?.apiOrigin,
-    region?.core,
-    region?.coreOrigin,
-    region?.baseUrl,
-    region?.baseURL,
-    region?.url
-  ].filter(Boolean);
-
-  const deduped = [];
-  for (const v of values) {
-    if (!deduped.includes(v)) deduped.push(v);
-  }
-  return deduped;
-}
-
-function buildListCandidates(origin, projectId) {
-  const base = String(origin || "").replace(/\/+$/, "");
-
-  return [
-    `${base}/projects/${projectId}/files`,
-    `${base}/project/${projectId}/files`,
-    `${base}/connect/projects/${projectId}/files`,
-    `${base}/connect/project/${projectId}/files`,
-    `${base}/v1/projects/${projectId}/files`,
-    `${base}/v1/project/${projectId}/files`,
-    `${base}/files?projectId=${encodeURIComponent(projectId)}`,
-    `${base}/connect/files?projectId=${encodeURIComponent(projectId)}`
-  ];
-}
-
-function isObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value);
-}
-
-function flattenPossibleFileList(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (!isObject(payload)) return [];
-
-  const keysToTry = [
-    "items",
-    "files",
-    "data",
-    "results",
-    "entries",
-    "documents",
-    "children"
-  ];
-
-  for (const key of keysToTry) {
-    if (Array.isArray(payload[key])) return payload[key];
-  }
-
-  for (const key of keysToTry) {
-    if (isObject(payload[key])) {
-      for (const nestedKey of keysToTry) {
-        if (Array.isArray(payload[key][nestedKey])) {
-          return payload[key][nestedKey];
-        }
-      }
-    }
-  }
-
-  return [];
-}
-
-function mapFile(raw) {
-  const name =
-    raw?.name ||
-    raw?.fileName ||
-    raw?.filename ||
-    raw?.title ||
-    raw?.displayName ||
-    null;
-
-  const path =
-    raw?.path ||
-    raw?.fullPath ||
-    raw?.location ||
-    raw?.parentPath ||
-    null;
-
-  return {
-    id: raw?.id || raw?.fileId || raw?.identifier || null,
-    name,
-    path,
-    size: raw?.size ?? raw?.fileSize ?? null,
-    raw
-  };
-}
-
-function isKofFile(file) {
-  const candidates = [file?.name, file?.path].filter(Boolean);
-  return candidates.some((v) => String(v).toLowerCase().endsWith(".kof"));
-}
-
-async function fetchJsonOrText(url, options) {
+async function fetchJsonOrText(url, options = {}) {
   const response = await fetch(url, options);
   const text = await response.text();
-
   let parsed = null;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
+  try { parsed = JSON.parse(text); } catch { /* ikke JSON */ }
 
   return {
-    status: response.status,
     ok: response.ok,
-    headers: Object.fromEntries(response.headers.entries()),
+    status: response.status,
+    contentType: response.headers.get("content-type") || "",
     text,
     json: parsed
   };
 }
 
-async function discoverRegions() {
-  const masterUrl = "https://api.connect.trimble.com/regions";
-  return fetchJsonOrText(masterUrl, {
-    method: "GET",
-    headers: {
-      Accept: "application/json"
-    }
-  });
-}
-
-// ─── NY FUNKSJON: Last ned KOF-fil via Trimble Core API ───────────────────────
-//
-// Trimble sin nedlastingsflyt:
-//   1. GET /tc/api/2.0/files/{fileId}          → metadata, inneholder versionId
-//   2. GET /tc/api/2.0/files/{versionId}/blobstore  → { url: "<pre-signed S3 URL>" }
-//   3. GET <pre-signed URL>                     → råtekst (uten Authorization-header)
-//
-// Faller tilbake på alternative endepunkter hvis blobstore ikke svarer.
-// ──────────────────────────────────────────────────────────────────────────────
+// ─── Action: downloadKofFile ──────────────────────────────────────────────────
 async function handleDownloadKofFile(token, fileId, projectLocation) {
-  // Velg riktig base-URL basert på region
-  const loc = normalizeLocation(projectLocation);
-  const isEurope =
-    loc.includes("europe") || loc === "eu" || loc.includes("eu");
-
-  const baseUrl = isEurope
-    ? "https://app.eu.connect.trimble.com/tc/api/2.0"
-    : "https://app.connect.trimble.com/tc/api/2.0";
-
-  const authHeaders = {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/json"
-  };
-
-  const diagnostics = { fileId, projectLocation, baseUrl, steps: [] };
+  const base = getCoreBaseUrl(projectLocation);
+  const authHeaders = { Authorization: `Bearer ${token}` };
+  const diagnostics = { fileId, projectLocation, base, steps: [] };
 
   // Steg 1: Hent metadata for å få versionId
-  let versionId = fileId; // fallback: bruk fileId direkte
+  let versionId = fileId;
   try {
-    const metaRes = await fetchJsonOrText(
-      `${baseUrl}/files/${fileId}`,
-      { method: "GET", headers: authHeaders }
-    );
+    const metaUrl = `${base}/files/${encodeURIComponent(fileId)}`;
+    const meta = await fetchJsonOrText(metaUrl, {
+      method: "GET",
+      headers: authHeaders
+    });
 
     diagnostics.steps.push({
       step: "metadata",
-      url: `${baseUrl}/files/${fileId}`,
-      status: metaRes.status,
-      ok: metaRes.ok,
-      preview: metaRes.text.slice(0, 300)
+      url: metaUrl,
+      status: meta.status,
+      ok: meta.ok,
+      preview: meta.text.slice(0, 400)
     });
 
-    if (metaRes.ok && metaRes.json?.versionId) {
-      versionId = metaRes.json.versionId;
+    if (meta.ok && meta.json?.versionId) {
+      versionId = meta.json.versionId;
     }
   } catch (err) {
     diagnostics.steps.push({ step: "metadata", error: String(err) });
@@ -241,72 +113,79 @@ async function handleDownloadKofFile(token, fileId, projectLocation) {
 
   diagnostics.versionId = versionId;
 
-  // Steg 2: Prøv å hente pre-signed URL via blobstore
-  const downloadCandidates = [
-    `${baseUrl}/files/${versionId}/blobstore`,
-    `${baseUrl}/files/${versionId}/download`,
-    `${baseUrl}/files/${versionId}/blob`,
-    `${baseUrl}/files/${versionId}/content`
+  // Steg 2: Prøv ulike endepunkter for å hente pre-signed URL eller direkte innhold
+  const candidates = [
+    `${base}/files/${encodeURIComponent(versionId)}/blobstore`,
+    `${base}/files/${encodeURIComponent(versionId)}/download`,
+    `${base}/files/${encodeURIComponent(versionId)}/blob`,
+    `${base}/files/${encodeURIComponent(versionId)}/content`
   ];
 
-  for (const url of downloadCandidates) {
+  for (const url of candidates) {
     try {
       const res = await fetchJsonOrText(url, {
         method: "GET",
         headers: authHeaders
       });
 
-      const ct = res.headers["content-type"] || "";
-      const isJson = ct.includes("application/json");
+      const isJson = res.contentType.includes("application/json");
 
       diagnostics.steps.push({
-        step: "download-attempt",
+        step: "download-candidate",
         url,
         status: res.status,
-        contentType: ct,
         ok: res.ok,
+        contentType: res.contentType,
         preview: res.text.slice(0, 300)
       });
 
       if (!res.ok) continue;
 
-      // Scenario A: Svaret er JSON med en pre-signed URL
-      if (isJson && res.json?.url) {
-        const presignedUrl = res.json.url;
+      // Scenario A: JSON-respons med pre-signed URL
+      const presignedUrl =
+        res.json?.url ||
+        res.json?.downloadUrl ||
+        res.json?.href ||
+        res.json?.link ||
+        null;
+
+      if (isJson && presignedUrl) {
         diagnostics.steps.push({
-          step: "presigned-fetch",
-          url: presignedUrl.slice(0, 80) + "..."
+          step: "presigned-url-found",
+          host: (() => { try { return new URL(presignedUrl).host; } catch { return "?"; } })()
         });
 
-        // Hent fra pre-signed URL *uten* Authorization-header (viktig!)
-        const fileRes = await fetch(presignedUrl, {
-          method: "GET",
-          headers: { Accept: "*/*" }
-        });
-
-        const fileText = await fileRes.text();
-
-        diagnostics.steps.push({
-          step: "presigned-result",
-          status: fileRes.status,
-          ok: fileRes.ok,
-          byteLength: fileText.length
-        });
-
-        if (fileRes.ok) {
-          return json(200, {
-            ok: true,
-            fileId,
-            versionId,
-            source: url,
-            content: fileText,
-            diagnostics
+        // Steg 3: Hent innhold fra pre-signed URL (UTEN Authorization-header)
+        try {
+          const fileRes = await fetchJsonOrText(presignedUrl, {
+            method: "GET"
           });
+
+          diagnostics.steps.push({
+            step: "presigned-fetch",
+            status: fileRes.status,
+            ok: fileRes.ok,
+            contentType: fileRes.contentType,
+            byteLength: fileRes.text.length
+          });
+
+          if (fileRes.ok) {
+            return json(200, {
+              ok: true,
+              fileId,
+              versionId,
+              source: url,
+              content: fileRes.text,
+              diagnostics
+            });
+          }
+        } catch (err) {
+          diagnostics.steps.push({ step: "presigned-fetch", error: String(err) });
         }
       }
 
-      // Scenario B: Svaret er direkte filinnhold (tekst, ikke JSON)
-      if (!isJson && res.text.length > 0) {
+      // Scenario B: Direkte filinnhold (ikke JSON, ikke tom)
+      if (!isJson && res.text.length > 10) {
         return json(200, {
           ok: true,
           fileId,
@@ -318,182 +197,89 @@ async function handleDownloadKofFile(token, fileId, projectLocation) {
       }
     } catch (err) {
       diagnostics.steps.push({
-        step: "download-attempt",
+        step: "download-candidate",
         url,
         error: String(err)
       });
     }
   }
 
-  // Ingenting fungerte
   return json(502, {
     ok: false,
-    error: "Fant ikke fungerende nedlastings-endepunkt",
+    error: "Ingen nedlastingsendepunkt fungerte. Se diagnostics for detaljer.",
     fileId,
     versionId,
     diagnostics
   });
 }
-// ──────────────────────────────────────────────────────────────────────────────
 
+// ─── Handler ──────────────────────────────────────────────────────────────────
 exports.handler = async function (event) {
-  if (event.httpMethod !== "POST") {
+  // CORS preflight
+  if (event.httpMethod === "OPTIONS") {
     return {
-      statusCode: 405,
-      body: "Use POST"
+      statusCode: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+      },
+      body: ""
     };
   }
 
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: "Use POST" };
+  }
+
+  let data;
   try {
-    const data = JSON.parse(event.body || "{}");
-    const { action, token, projectId, projectLocation, fileId } = data || {};
+    data = JSON.parse(event.body || "{}");
+  } catch {
+    return json(400, { ok: false, error: "Invalid JSON body" });
+  }
 
-    if (!token) {
-      return json(400, { ok: false, error: "Missing token" });
-    }
+  const { action, token, url, method, fileId, projectLocation } = data;
 
-    if (!action) {
-      return json(400, { ok: false, error: "Missing action" });
-    }
+  if (!token) {
+    return json(400, { ok: false, error: "Missing token" });
+  }
 
-    // ── Action: Last ned KOF-fil ──────────────────────────────────────────────
-    if (action === "downloadKofFile") {
-      if (!fileId) {
-        return json(400, { ok: false, error: "Missing fileId" });
+  // ── Action: downloadKofFile ──────────────────────────────────────────────
+  if (action === "downloadKofFile") {
+    if (!fileId) return json(400, { ok: false, error: "Missing fileId" });
+    return handleDownloadKofFile(token, fileId, projectLocation);
+  }
+
+  // ── Action: proxy (eller ingen action = bakoverkompatibel) ───────────────
+  if (!url) {
+    return json(400, { ok: false, error: "Missing url" });
+  }
+
+  if (!isAllowedUrl(url)) {
+    return json(403, { ok: false, error: `URL ikke tillatt: ${url}` });
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: method || "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json"
       }
-      return handleDownloadKofFile(token, fileId, projectLocation);
-    }
+    });
 
-    // ── Action: List KOF-filer ────────────────────────────────────────────────
-    if (action !== "listKofFiles") {
-      return json(400, { ok: false, error: `Unknown action: ${action}` });
-    }
+    const text = await response.text();
 
-    if (!projectId) {
-      return json(400, { ok: false, error: "Missing projectId" });
-    }
-
-    const regionDiscovery = await discoverRegions();
-
-    if (!regionDiscovery.ok) {
-      return json(502, {
-        ok: false,
-        error: "Region discovery failed",
-        diagnostics: {
-          status: regionDiscovery.status,
-          preview: regionDiscovery.text.slice(0, 1000)
-        }
-      });
-    }
-
-    const regionPayload = regionDiscovery.json;
-    const regions = Array.isArray(regionPayload)
-      ? regionPayload
-      : Array.isArray(regionPayload?.items)
-      ? regionPayload.items
-      : Array.isArray(regionPayload?.regions)
-      ? regionPayload.regions
-      : [];
-
-    const pickedRegion = pickRegionByProjectLocation(regions, projectLocation);
-
-    if (!pickedRegion) {
-      return json(502, {
-        ok: false,
-        error: "Could not match project region from /regions result",
-        diagnostics: {
-          projectLocation,
-          regionCount: regions.length,
-          sampleRegions: regions.slice(0, 5)
-        }
-      });
-    }
-
-    const origins = collectCandidateOrigins(pickedRegion);
-
-    if (origins.length === 0) {
-      return json(502, {
-        ok: false,
-        error: "Matched region has no usable API origin",
-        diagnostics: {
-          projectLocation,
-          pickedRegion
-        }
-      });
-    }
-
-    const diagnostics = {
-      projectId,
-      projectLocation,
-      pickedRegion,
-      tried: []
+    return {
+      statusCode: response.status,
+      headers: {
+        "Content-Type": response.headers.get("content-type") || "text/plain",
+        "Access-Control-Allow-Origin": "*"
+      },
+      body: text
     };
-
-    for (const origin of origins) {
-      const candidates = buildListCandidates(origin, projectId);
-
-      for (const url of candidates) {
-        try {
-          const result = await fetchJsonOrText(url, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: "application/json"
-            }
-          });
-
-          const preview =
-            result.json && typeof result.json === "object"
-              ? result.json
-              : result.text.slice(0, 500);
-
-          diagnostics.tried.push({
-            url,
-            status: result.status,
-            ok: result.ok,
-            preview
-          });
-
-          if (!result.ok) {
-            continue;
-          }
-
-          const list = flattenPossibleFileList(result.json ?? result.text);
-          const mapped = list.map(mapFile);
-          const kofFiles = mapped.filter(isKofFile);
-
-          return json(200, {
-            ok: true,
-            projectId,
-            projectLocation,
-            usedUrl: url,
-            matchedRegion: pickedRegion,
-            totalFilesSeen: mapped.length,
-            kofFiles,
-            diagnostics
-          });
-        } catch (err) {
-          diagnostics.tried.push({
-            url,
-            ok: false,
-            fetchError: String(err?.message || err)
-          });
-        }
-      }
-    }
-
-    return json(502, {
-      ok: false,
-      error: "Could not find a working file-list endpoint yet",
-      diagnostics
-    });
   } catch (err) {
-    return json(500, {
-      ok: false,
-      error: String(err),
-      message: err?.message || null,
-      cause: err?.cause ? String(err.cause) : null,
-      stack: err?.stack || null
-    });
+    return json(500, { ok: false, error: "Proxy error: " + String(err) });
   }
 };

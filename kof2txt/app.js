@@ -337,7 +337,12 @@
   }
 
   function outputError(errObj) {
-    // Vis diagnostics-tabell hvis tilgjengelig
+    // Full diagnostics alltid i console
+    console.log("=== FULL DIAGNOSTICS ===");
+    console.log(JSON.stringify(errObj?.download?.proxyResult?.diagnostics || errObj, null, 2));
+    console.log("========================");
+
+    // Vis diagnostics-tabell i UI hvis tilgjengelig
     const steps = errObj?.download?.proxyResult?.diagnostics?.steps
       || errObj?.list?.diagnostics?.tried
       || errObj?.diagnostics?.steps

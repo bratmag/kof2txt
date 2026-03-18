@@ -222,6 +222,13 @@
   }
 
   // =========================
+  // Proxy-wrapper (all Trimble API kall går via proxy for å unngå CORS)
+  // =========================
+  async function proxyGet(token, url) {
+    return postJson(CONFIG.PROXY_URL, { action: "proxy", token, url, method: "GET" });
+  }
+
+  // =========================
   // File listing
   // =========================
   async function listRootFiles(accessToken, project) {
@@ -240,7 +247,7 @@
 
     for (const url of candidates) {
       try {
-        const r = await fetchJsonWithBearer(url, accessToken);
+        const r = await proxyGet(accessToken, url);
         diagnostics.push({ url, ok: r.ok, status: r.status, preview: shortText(r.text, 250) });
 
         if (!r.ok) continue;
@@ -281,7 +288,7 @@
   async function getFileMetadata(accessToken, project, fileId) {
     const base = getCoreBaseUrl(project.location);
     const url = `${base}/files/${encodeURIComponent(fileId)}`;
-    const r = await fetchJsonWithBearer(url, accessToken);
+    const r = await proxyGet(accessToken, url);
     return {
       ok: r.ok,
       status: r.status,

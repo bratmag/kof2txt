@@ -1,317 +1,98 @@
-/* app.js - KOF2TXT Trimble Connect Extension */
-
 (() => {
   "use strict";
 
   const CONFIG = {
     DEBUG: true,
-    AUTO_RUN: true,
     CONNECT_TIMEOUT_MS: 30000,
-    TOKEN_WAIT_MS: 30000,
-    FETCH_TIMEOUT_MS: 30000,
-    PRESIGNED_FETCH_TIMEOUT_MS: 60000,
+    AUTO_PROCESS_ON_FILE_SELECTED: true,
     PROXY_URL: "/.netlify/functions/tc-proxy"
   };
 
-  const $status =
-    document.getElementById("status") ||
-    document.getElementById("statusText") ||
-    document.getElementById("log") ||
-    null;
-
-  const $output =
-    document.getElementById("output") ||
-    document.getElementById("result") ||
-    document.getElementById("json") ||
-    null;
-
-  const $runBtn =
-    document.getElementById("runBtn") ||
-    document.getElementById("startBtn") ||
-    document.getElementById("btnRun") ||
-    null;
+  const els = {
+    status:
+      document.getElementById("status") ||
+      document.getElementById("statusText") ||
+      null,
+    output:
+      document.getElementById("output") ||
+      document.getElementById("result") ||
+      null,
+    runBtn:
+      document.getElementById("runBtn") ||
+      document.getElementById("startBtn") ||
+      null
+  };
 
   const state = {
     api: null,
     accessToken: null,
-    tokenWaiters: [],
-    project: null
+    project: null,
+    selectedFile: null,
+    lastResult: null
   };
 
-  function log(...args) { console.log(...args); }
-  function debug(...args) { if (CONFIG.DEBUG) console.log(...args); }
+  function log(...args) {
+    console.log(...args);
+  }
 
-  function setStatus(msg) {
-    console.log(`[STATUS] ${msg}`);
-    if ($status) $status.textContent = msg;
+  function debug(...args) {
+    if (CONFIG.DEBUG) console.log(...args);
+  }
+
+  function setStatus(message) {
+    log(`[STATUS] ${message}`);
+    if (els.status) els.status.textContent = message;
+
     if (state.api?.extension?.setStatusMessage) {
-      state.api.extension.setStatusMessage(msg).catch(() => {});
+      state.api.extension.setStatusMessage(message).catch(() => {});
     }
   }
 
-  function setOutput(obj) {
-    console.log("[OUTPUT]");
-    console.log(obj);
-    if ($output) {
-      $output.textContent =
-        typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+  function setOutput(data) {
+    log("[OUTPUT]");
+    log(data);
+    if (els.output) {
+      els.output.textContent =
+        typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
   }
 
-  function shortText(text, max = 300) {
+  function shortText(text, len = 1200) {
     if (typeof text !== "string") return text;
-    return text.length > max ? text.slice(0, max) + "..." : text;
+    return text.length > len ? text.slice(0, len) + "..." : text;
+  }
+
+  function isKofFile(file) {
+    return /\.kof$/i.test(String(file?.name || ""));
   }
 
   function safeJsonParse(text) {
-    try { return JSON.parse(text); } catch { return null; }
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
   }
 
-  function withTimeout(promise, ms, label = "Operation") {
+  function withTimeout(promise, ms, label) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error(`${label} timed out after ${ms} ms`));
       }, ms);
+
       promise
-        .then((value) => { clearTimeout(timer); resolve(value); })
-        .catch((err) => { clearTimeout(timer); reject(err); });
+        .then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
     });
   }
 
-  async function connectWorkspace() {
-    setStatus("Kobler til Trimble Connect...");
-    if (!window.TrimbleConnectWorkspace?.connect) {
-      throw new Error("TrimbleConnectWorkspace ikke funnet.");
-    }
-    const api = await TrimbleConnectWorkspace.connect(
-      window.parent, onWorkspaceEvent, CONFIG.CONNECT_TIMEOUT_MS
-    );
-    state.api = api;
-    debug("API keys:", Object.keys(api || {}));
-    if (api?.ui?.setMenu) {
-      try {
-        await api.ui.setMenu({ title: "KOF2TXT", icon: "", command: "kof2txt_main" });
-      } catch (err) {
-        debug("setMenu ignorert:", err?.message || err);
-      }
-    }
-    return api;
-  }
-
-  function onWorkspaceEvent(event, args) {
-    debug("[TC EVENT]", event, args);
-    if (event === "extension.accessToken") {
-      const token = args?.data;
-      if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
-        state.accessToken = token;
-        const waiters = [...state.tokenWaiters];
-        state.tokenWaiters.length = 0;
-        waiters.forEach((resolve) => resolve(token));
-      }
-    }
-  }
-
-  async function requestAccessToken() {
-    setStatus("Ber om access token...");
-    if (!state.api?.extension?.requestPermission) {
-      throw new Error("extension.requestPermission finnes ikke.");
-    }
-    const result = await state.api.extension.requestPermission("accesstoken");
-    debug("requestPermission result:", result);
-    if (typeof result === "string" && result && result !== "pending" && result !== "denied") {
-      state.accessToken = result;
-      return result;
-    }
-    if (result === "denied") throw new Error("Access token ble avslått.");
-    if (result === "pending") {
-      return withTimeout(
-        new Promise((resolve) => { state.tokenWaiters.push(resolve); }),
-        CONFIG.TOKEN_WAIT_MS, "Venter på token"
-      );
-    }
-    if (state.accessToken) return state.accessToken;
-    throw new Error(`Uventet svar: ${String(result)}`);
-  }
-
-  async function getProject() {
-    setStatus("Henter prosjektinfo...");
-    let project = null;
-    if (state.api?.project?.getProject) {
-      project = await state.api.project.getProject();
-    } else if (state.api?.project?.getCurrentProject) {
-      project = await state.api.project.getCurrentProject();
-    }
-    if (!project?.id) throw new Error("Fant ikke aktivt prosjekt.");
-    state.project = project;
-    debug("Project (full):", JSON.stringify(project));
-    return project;
-  }
-
-  function getCoreBaseUrl(projectLocation) {
-    const loc = String(projectLocation || "").toLowerCase();
-    if (loc === "europe") return "https://app.eu.connect.trimble.com/tc/api/2.0";
-    if (loc === "asia") return "https://app.asia.connect.trimble.com/tc/api/2.0";
-    return "https://app.connect.trimble.com/tc/api/2.0";
-  }
-
-  async function fetchRaw(url, options = {}, timeoutMs = CONFIG.FETCH_TIMEOUT_MS) {
-    const res = await withTimeout(fetch(url, options), timeoutMs, `Fetch ${url}`);
-    const contentType = res.headers.get("content-type") || "";
-    const text = await res.text();
-    const json = safeJsonParse(text);
-    return { url, ok: res.ok, status: res.status, contentType, text, json };
-  }
-
-  async function postJson(url, body, timeoutMs = CONFIG.FETCH_TIMEOUT_MS) {
-    return fetchRaw(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    }, timeoutMs);
-  }
-
-  async function proxyGet(token, url) {
-    const r = await postJson(CONFIG.PROXY_URL, { action: "proxy", token, url, method: "GET" });
-    debug("PROXY SVAR:", url, "->", r.status, shortText(r.text, 400));
-    return r;
-  }
-
-  async function getRootFolderId(accessToken, project) {
-    const base = getCoreBaseUrl(project.location);
-    const candidates = [
-      `${base}/projects/${encodeURIComponent(project.id)}`,
-      `${base}/project/${encodeURIComponent(project.id)}`
-    ];
-    for (const url of candidates) {
-      const r = await proxyGet(accessToken, url);
-      if (r.ok && r.json) {
-        const rootId =
-          r.json.rootId ||
-          r.json.rootFolderId ||
-          r.json.root?.id ||
-          r.json.rootFolder?.id ||
-          null;
-        debug("getRootFolderId:", url, "-> rootId:", rootId, "json:", JSON.stringify(r.json).slice(0, 400));
-        if (rootId) return rootId;
-      }
-    }
-    return null;
-  }
-
-  async function listRootFiles(accessToken, project) {
-    setStatus("Lister filer i root...");
-    const base = getCoreBaseUrl(project.location);
-    const diagnostics = [];
-
-    // Steg 1: folder-basert (Trimble Core API primær metode)
-    const rootId = await getRootFolderId(accessToken, project);
-    if (rootId) {
-      const folderUrl = `${base}/folders/${encodeURIComponent(rootId)}/items`;
-      try {
-        const r = await proxyGet(accessToken, folderUrl);
-        diagnostics.push({ url: folderUrl, ok: r.ok, status: r.status, preview: shortText(r.text, 300) });
-        if (r.ok) {
-          const items = extractArrayFromPayload(r.json);
-          if (items.length) {
-            debug("Fant", items.length, "filer via folder-endepunkt");
-            return { ok: true, url: folderUrl, files: items, diagnostics };
-          }
-        }
-      } catch (err) {
-        diagnostics.push({ url: folderUrl, ok: false, error: err?.message || String(err) });
-      }
-    }
-
-    // Steg 2: fallback
-    const candidates = [
-      `${base}/files?projectId=${encodeURIComponent(project.id)}&parentId=root`,
-      `${base}/files?parentId=root&projectId=${encodeURIComponent(project.id)}`,
-      `${base}/projects/${encodeURIComponent(project.id)}/files?parentId=root`,
-      `${base}/projects/${encodeURIComponent(project.id)}/files`,
-      `${base}/files?projectId=${encodeURIComponent(project.id)}`
-    ];
-
-    for (const url of candidates) {
-      try {
-        const r = await proxyGet(accessToken, url);
-        diagnostics.push({ url, ok: r.ok, status: r.status, preview: shortText(r.text, 300) });
-        if (!r.ok) continue;
-        const items = extractArrayFromPayload(r.json);
-        if (items.length) return { ok: true, url, files: items, diagnostics };
-      } catch (err) {
-        diagnostics.push({ url, ok: false, error: err?.message || String(err) });
-      }
-    }
-
-    return { ok: false, error: "Fant ingen fungerende root-listing endpoint.", diagnostics };
-  }
-
-  function extractArrayFromPayload(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload;
-    for (const key of ["items", "data", "files", "results", "children"]) {
-      if (Array.isArray(payload[key])) return payload[key];
-    }
-    return [];
-  }
-
-  function findFirstKof(files) {
-    if (!Array.isArray(files)) return null;
-    return (
-      files.find((f) => /\.kof$/i.test(String(f?.name || ""))) ||
-      files.find((f) => String(f?.name || "").toLowerCase().includes(".kof")) ||
-      null
-    );
-  }
-
-  async function getFileMetadata(accessToken, project, fileId) {
-    const base = getCoreBaseUrl(project.location);
-    const url = `${base}/files/${encodeURIComponent(fileId)}`;
-    const r = await proxyGet(accessToken, url);
-    return { ok: r.ok, status: r.status, url, contentType: r.contentType, preview: shortText(r.text, 300), data: r.json };
-  }
-
-  async function downloadKofFile(accessToken, project, fileId) {
-    const meta = await getFileMetadata(accessToken, project, fileId);
-    if (!meta.ok || !meta.data) {
-      return { ok: false, step: "metadata", metadata: meta };
-    }
-    setStatus(`Laster ned ${meta.data.name || fileId} via proxy...`);
-
-    const proxyRes = await postJson(
-      CONFIG.PROXY_URL,
-      { action: "downloadKofFile", token: accessToken, fileId, projectLocation: project.location, projectId: project.id },
-      CONFIG.PRESIGNED_FETCH_TIMEOUT_MS
-    );
-
-    const result = proxyRes.json;
-    debug("downloadKofFile proxy result:", JSON.stringify(result).slice(0, 600));
-
-    if (!proxyRes.ok || !result?.ok) {
-      return {
-        ok: false, step: "downloadKof",
-        metadata: { id: meta.data?.id, versionId: meta.data?.versionId, name: meta.data?.name },
-        proxyStatus: proxyRes.status,
-        proxyResult: result
-      };
-    }
-
-    return {
-      ok: true, step: "done",
-      file: { id: meta.data?.id, versionId: meta.data?.versionId, name: meta.data?.name },
-      source: result.source,
-      contentType: null,
-      text: result.content,
-      diagnostics: result.diagnostics
-    };
-  }
-
-  function convertKofToTxt(kofText) {
-    // Placeholder - bytt ut med KOF-parser
-    return kofText;
-  }
-
-  function downloadTextFile(filename, text) {
+  function triggerDownload(filename, text) {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -323,93 +104,322 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function outputSuccess(result) {
-    const txt = convertKofToTxt(result.text);
-    setOutput({
-      ok: true,
-      project: { id: state.project?.id, location: state.project?.location, name: state.project?.name },
-      file: result.file,
-      source: result.source,
-      preview: shortText(result.text, 1000)
-    });
-    const baseName = String(result.file?.name || "output.kof").replace(/\.kof$/i, "");
-    downloadTextFile(`${baseName}.txt`, txt);
+  function fileLikeFromEventArg(arg) {
+    if (!arg) return null;
+
+    if (arg.id && arg.name) return arg;
+    if (arg.data?.id && arg.data?.name) return arg.data;
+    if (arg.file?.id && arg.file?.name) return arg.file;
+
+    if (Array.isArray(arg.files) && arg.files.length) return arg.files[0];
+    if (Array.isArray(arg.data?.files) && arg.data.files.length) return arg.data.files[0];
+
+    return null;
   }
 
-  function outputError(errObj) {
-    // Full diagnostics alltid i console
-    console.log("=== FULL DIAGNOSTICS ===");
-    console.log(JSON.stringify(errObj?.download?.proxyResult?.diagnostics || errObj, null, 2));
-    console.log("========================");
+  async function connectWorkspace() {
+    setStatus("Kobler til Trimble Connect...");
 
-    // Vis diagnostics-tabell i UI hvis tilgjengelig
-    const steps = errObj?.download?.proxyResult?.diagnostics?.steps
-      || errObj?.list?.diagnostics?.tried
-      || errObj?.diagnostics?.steps
-      || null;
-    if (steps && window.showDiagnostics) {
-      window._lastDiagnostics = errObj;
-      window.showDiagnostics(steps);
+    if (!window.TrimbleConnectWorkspace?.connect) {
+      throw new Error(
+        "TrimbleConnectWorkspace ikke funnet. Sjekk at Workspace API-scriptet er lastet i index.html."
+      );
     }
-    setOutput(errObj);
+
+    const api = await TrimbleConnectWorkspace.connect(
+      window.parent,
+      onWorkspaceEvent,
+      CONFIG.CONNECT_TIMEOUT_MS
+    );
+
+    state.api = api;
+    debug("API keys:", Object.keys(api || {}));
+
+    if (api?.ui?.setMenu) {
+      try {
+        await api.ui.setMenu({
+          title: "KOF2TXT",
+          icon: "",
+          command: "kof2txt"
+        });
+      } catch (err) {
+        debug("setMenu ignorert:", err?.message || err);
+      }
+    }
+
+    return api;
   }
 
-  async function main() {
+  async function requestAccessToken() {
+    setStatus("Ber om access token...");
+
+    if (!state.api?.extension?.requestPermission) {
+      throw new Error("extension.requestPermission finnes ikke.");
+    }
+
+    const token = await state.api.extension.requestPermission("accesstoken");
+
+    if (!token || typeof token !== "string" || token === "pending" || token === "denied") {
+      throw new Error(`Fikk ikke gyldig access token. Svar: ${String(token)}`);
+    }
+
+    state.accessToken = token;
+    debug("Access token mottatt:", true);
+    return token;
+  }
+
+  async function getProject() {
+    setStatus("Henter prosjektinfo...");
+
+    if (!state.api?.project?.getProject) {
+      throw new Error("project.getProject finnes ikke.");
+    }
+
+    const project = await state.api.project.getProject();
+
+    if (!project?.id) {
+      throw new Error("Fant ikke aktivt prosjekt.");
+    }
+
+    state.project = project;
+    debug("Project:", project);
+    return project;
+  }
+
+  async function callProxy(action, payload) {
+    const res = await withTimeout(
+      fetch(CONFIG.PROXY_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          action,
+          ...payload
+        })
+      }),
+      60000,
+      `Proxy ${action}`
+    );
+
+    const text = await res.text();
+    const json = safeJsonParse(text);
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      text,
+      json
+    };
+  }
+
+  function convertKofToTxt(kofText) {
+    // Foreløpig råtekst.
+    // Sett inn faktisk KOF->TXT-logikk her når nedlasting fungerer stabilt.
+    return kofText;
+  }
+
+  async function processSelectedFile() {
     try {
-      setStatus("Starter...");
-      await connectWorkspace();
-
-      setStatus("Validerer token...");
-      const accessToken = await requestAccessToken();
-      debug("Access token mottatt:", !!accessToken);
-
-      const project = await getProject();
-
-      const list = await listRootFiles(accessToken, project);
-      if (!list.ok) {
-        throw { ok: false, step: "listRootFiles", project, list };
+      if (!state.api) {
+        throw new Error("Ikke koblet til Workspace API.");
       }
 
-      const kofFile = findFirstKof(list.files);
-      if (!kofFile) {
-        throw {
-          ok: false, step: "findKof", project,
-          rootListUrl: list.url,
-          rootFileCount: list.files.length,
-          filesPreview: list.files.slice(0, 20).map((f) => ({
-            id: f.id, name: f.name, type: f.type, versionId: f.versionId
-          }))
-        };
+      if (!state.accessToken) {
+        await requestAccessToken();
       }
 
-      setStatus(`Laster ned ${kofFile.name} ...`);
-      const result = await downloadKofFile(accessToken, project, kofFile.id);
+      if (!state.project) {
+        await getProject();
+      }
 
-      if (!result.ok) {
-        setStatus("Klarte ikke laste ned KOF-fil");
-        outputError({
-          ok: false, step: "downloadKof",
-          project: { id: project.id, location: project.location, name: project.name },
-          file: { id: kofFile.id, name: kofFile.name, versionId: kofFile.versionId },
-          download: result
+      if (!state.selectedFile) {
+        setStatus("Velg en .kof-fil i Trimble Connect først.");
+        setOutput({
+          ok: false,
+          step: "noSelectedFile",
+          message: "Ingen fil valgt. Marker eller åpne en .kof-fil i Trimble Connect."
         });
         return;
       }
 
-      setStatus("KOF-fil lastet ned ✓");
-      outputSuccess(result);
+      if (!isKofFile(state.selectedFile)) {
+        setStatus("Valgt fil er ikke en .kof-fil");
+        setOutput({
+          ok: false,
+          step: "wrongFileType",
+          file: state.selectedFile
+        });
+        return;
+      }
+
+      setStatus(`Laster ned ${state.selectedFile.name} ...`);
+
+      const proxyRes = await callProxy("downloadKofFile", {
+        token: state.accessToken,
+        projectId: state.project.id,
+        projectLocation: state.project.location,
+        fileId: state.selectedFile.id,
+        fileName: state.selectedFile.name
+      });
+
+      if (!proxyRes.ok || !proxyRes.json) {
+        setStatus("Proxy-feil");
+        setOutput({
+          ok: false,
+          step: "proxyHttp",
+          status: proxyRes.status,
+          preview: shortText(proxyRes.text, 1500)
+        });
+        return;
+      }
+
+      const result = proxyRes.json;
+      state.lastResult = result;
+
+      if (!result.ok) {
+        setStatus("Klarte ikke laste ned KOF-fil");
+        setOutput(result);
+        return;
+      }
+
+      const txt = convertKofToTxt(result.text || "");
+      const outName = String(result.file?.name || "output.kof").replace(/\.kof$/i, ".txt");
+
+      setStatus("KOF-fil lastet ned");
+      setOutput({
+        ok: true,
+        project: result.project,
+        file: result.file,
+        source: result.source,
+        contentType: result.contentType,
+        preview: shortText(result.text || "", 1500)
+      });
+
+      triggerDownload(outName, txt);
     } catch (err) {
       console.error(err);
-      const payload = err && typeof err === "object" ? err : { ok: false, error: String(err) };
       setStatus("Feil");
-      outputError(payload);
+      setOutput({
+        ok: false,
+        error: err?.message || String(err)
+      });
     }
   }
 
-  if ($runBtn) {
-    $runBtn.addEventListener("click", () => { main(); });
+  async function runCoreProbe() {
+    try {
+      if (!state.accessToken) await requestAccessToken();
+      if (!state.project) await getProject();
+
+      if (!state.selectedFile?.id) {
+        setOutput({
+          ok: false,
+          step: "probeNoFile",
+          message: "Velg en .kof-fil først, så kan probe kjøre mot valgt fil."
+        });
+        return;
+      }
+
+      setStatus("Kjører Core probe...");
+
+      const proxyRes = await callProxy("probeCore", {
+        token: state.accessToken,
+        projectId: state.project.id,
+        projectLocation: state.project.location,
+        fileId: state.selectedFile.id,
+        fileName: state.selectedFile.name
+      });
+
+      setStatus("Core probe ferdig");
+      setOutput(proxyRes.json || proxyRes.text);
+      return proxyRes.json || proxyRes.text;
+    } catch (err) {
+      console.error(err);
+      setStatus("Feil i probe");
+      setOutput({
+        ok: false,
+        error: err?.message || String(err)
+      });
+    }
   }
-  if (CONFIG.AUTO_RUN) {
-    window.addEventListener("load", () => { main(); });
+
+  function onWorkspaceEvent(event, args) {
+    debug("[TC EVENT]", event, args);
+
+    if (event === "extension.fileSelected" || event === "extension.fileViewClicked") {
+      const file = fileLikeFromEventArg(args);
+
+      if (!file) {
+        debug("Fikk file-event, men klarte ikke lese filobjektet.");
+        return;
+      }
+
+      state.selectedFile = file;
+
+      setStatus(`Valgt fil: ${file.name}`);
+      setOutput({
+        ok: true,
+        message: "Fil valgt i Trimble Connect",
+        file: {
+          id: file.id,
+          name: file.name,
+          type: file.type,
+          versionId: file.versionId
+        }
+      });
+
+      if (CONFIG.AUTO_PROCESS_ON_FILE_SELECTED && isKofFile(file)) {
+        processSelectedFile().catch((err) => {
+          console.error(err);
+          setStatus("Feil");
+          setOutput({
+            ok: false,
+            error: err?.message || String(err)
+          });
+        });
+      }
+    }
   }
+
+  async function init() {
+    try {
+      setStatus("Starter...");
+      await connectWorkspace();
+      await requestAccessToken();
+      await getProject();
+
+      setStatus("Klar. Velg en .kof-fil i Trimble Connect.");
+      setOutput({
+        ok: true,
+        project: {
+          id: state.project.id,
+          name: state.project.name,
+          location: state.project.location
+        },
+        message: "Extension er klar. Velg eller åpne en .kof-fil i Trimble Connect."
+      });
+
+      window.kof2txt = {
+        state,
+        processSelectedFile,
+        runCoreProbe
+      };
+    } catch (err) {
+      console.error(err);
+      setStatus("Feil");
+      setOutput({
+        ok: false,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  if (els.runBtn) {
+    els.runBtn.addEventListener("click", () => {
+      processSelectedFile();
+    });
+  }
+
+  window.addEventListener("load", init);
 })();

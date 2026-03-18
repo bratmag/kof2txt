@@ -65,6 +65,24 @@ async function fetchJson(url, token) {
   };
 }
 
+async function fetchText(url, token) {
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "*/*"
+    }
+  });
+
+  const text = await res.text();
+
+  return {
+    status: res.status,
+    ok: res.ok,
+    text
+  };
+}
+
 function isObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -126,6 +144,7 @@ function mapEntry(raw) {
 
   return {
     id: raw?.id || raw?.fileId || raw?.folderId || raw?.identifier || null,
+    versionId: raw?.versionId || raw?.id || null,
     name,
     path,
     type,
@@ -135,7 +154,7 @@ function mapEntry(raw) {
 }
 
 function isKofFile(entry) {
-  const candidates = [entry?.name, entry?.path].filter(Boolean);
+  const candidates = [entry?.name].filter(Boolean);
   return candidates.some((v) => String(v).toLowerCase().endsWith(".kof"));
 }
 
@@ -212,72 +231,63 @@ async function validateAndFindProject(project, accessToken) {
   };
 }
 
-function buildRootCandidates(projectId, rootId) {
-  const base = "https://app.connect.trimble.com/tc/api/2.0";
+async function listRootItems(projectId, rootId, accessToken) {
+  const url = `https://app.connect.trimble.com/tc/api/2.0/folders/${rootId}/items`;
+  const result = await fetchJson(url, accessToken);
 
-  return [
-    `${base}/projects/${projectId}/folders/${rootId}/contents`,
-    `${base}/projects/${projectId}/folders/${rootId}/items`,
-    `${base}/projects/${projectId}/folders/${rootId}/children`,
-    `${base}/projects/${projectId}/folders/${rootId}`,
-    `${base}/folders/${rootId}/contents`,
-    `${base}/folders/${rootId}/items`,
-    `${base}/folders/${rootId}/children`,
-    `${base}/folders/${rootId}`,
-    `${base}/projects/${projectId}/root`,
-    `${base}/projects/${projectId}`
-  ];
-}
-
-async function listFromRoot(project, matchedProject, accessToken) {
-  const rootId = matchedProject?.rootId;
-
-  if (!rootId) {
+  if (!result.ok) {
     return {
       ok: false,
-      error: "Matched project mangler rootId"
+      url,
+      status: result.status,
+      preview: result.json || result.text.slice(0, 400)
     };
   }
 
-  const diagnostics = {
-    rootId,
-    tried: []
+  const entries = flattenPossibleList(result.json).map(mapEntry);
+
+  return {
+    ok: true,
+    url,
+    entries
   };
+}
 
-  setStatus("Tester root-folder endepunkter...");
+async function downloadKofFile(fileId, accessToken) {
+  const candidates = [
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}`,
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/content`,
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/download`,
+    `https://app.connect.trimble.com/tc/api/2.0/data/${fileId}`
+  ];
 
-  const urls = buildRootCandidates(project.id, rootId);
+  const diagnostics = [];
 
-  for (const url of urls) {
+  for (const url of candidates) {
     try {
-      const result = await fetchJson(url, accessToken);
+      const result = await fetchText(url, accessToken);
 
-      diagnostics.tried.push({
+      diagnostics.push({
         url,
         status: result.status,
         ok: result.ok,
-        preview: result.json || result.text.slice(0, 400)
+        preview: result.text.slice(0, 200)
       });
 
       if (!result.ok) {
         continue;
       }
 
-      const list = flattenPossibleList(result.json);
-      const entries = list.map(mapEntry);
-      const kofFiles = entries.filter(isKofFile);
-
-      return {
-        ok: true,
-        usedUrl: url,
-        rootId,
-        entryCount: entries.length,
-        entries,
-        kofFiles,
-        diagnostics
-      };
+      if (result.text && result.text.trim().length > 0) {
+        return {
+          ok: true,
+          usedUrl: url,
+          text: result.text,
+          diagnostics
+        };
+      }
     } catch (err) {
-      diagnostics.tried.push({
+      diagnostics.push({
         url,
         ok: false,
         error: String(err?.message || err)
@@ -287,7 +297,7 @@ async function listFromRoot(project, matchedProject, accessToken) {
 
   return {
     ok: false,
-    error: "Fant ikke fungerende root-endepunkt ennå.",
+    error: "Fant ikke fungerende nedlastings-endepunkt ennå.",
     diagnostics
   };
 }
@@ -326,14 +336,14 @@ async function listFromRoot(project, matchedProject, accessToken) {
       command: "kof2txt_main",
       subMenus: [
         {
-          title: "Finn KOF-filer",
-          command: "kof2txt_list"
+          title: "Last KOF-fil",
+          command: "kof2txt_download"
         }
       ]
     });
 
     if (API.ui.setActiveMenuItem) {
-      await API.ui.setActiveMenuItem("kof2txt_list");
+      await API.ui.setActiveMenuItem("kof2txt_download");
     }
 
     if (API.extension?.setStatusMessage) {
@@ -377,52 +387,84 @@ async function listFromRoot(project, matchedProject, accessToken) {
       return;
     }
 
-    const rootTest = await listFromRoot(
-      project,
-      projectCheck.matchedProject,
-      accessToken
-    );
+    const rootId = projectCheck.matchedProject.rootId;
 
-    if (!rootTest.ok) {
-      setStatus("Fant ikke fungerende root-endepunkt");
+    if (!rootId) {
+      setStatus("Fant ikke rootId");
       setOutput({
         ok: false,
-        step: "rootEndpointTest",
-        matchedProject: projectCheck.matchedProject,
-        result: rootTest,
-        diagnostics: projectCheck.diagnostics
+        step: "rootId",
+        matchedProject: projectCheck.matchedProject
       });
       return;
     }
 
-    setStatus(
-      rootTest.kofFiles.length > 0
-        ? `Fant ${rootTest.kofFiles.length} .kof-fil(er)`
-        : `Root-endepunkt virker, men fant ingen .kof-filer`
-    );
+    setStatus("Lister filer i root...");
+    const rootList = await listRootItems(project.id, rootId, accessToken);
+
+    if (!rootList.ok) {
+      setStatus("Klarte ikke liste root-filer");
+      setOutput({
+        ok: false,
+        step: "listRootItems",
+        rootList
+      });
+      return;
+    }
+
+    const kofFiles = rootList.entries.filter(isKofFile);
+
+    if (kofFiles.length === 0) {
+      setStatus("Fant ingen .kof-filer");
+      setOutput({
+        ok: false,
+        step: "findKof",
+        matchedProject: projectCheck.matchedProject,
+        rootUrl: rootList.url,
+        entries: rootList.entries.map((f) => ({
+          id: f.id,
+          name: f.name,
+          type: f.type,
+          size: f.size
+        }))
+      });
+      return;
+    }
+
+    const firstKof = kofFiles[0];
+
+    setStatus(`Laster ned ${firstKof.name} ...`);
+    const download = await downloadKofFile(firstKof.id, accessToken);
+
+    if (!download.ok) {
+      setStatus("Klarte ikke laste ned KOF-fil");
+      setOutput({
+        ok: false,
+        step: "downloadKof",
+        file: {
+          id: firstKof.id,
+          name: firstKof.name
+        },
+        download
+      });
+      return;
+    }
+
+    setStatus("KOF-fil lastet ned");
 
     setOutput({
       ok: true,
-      step: "rootEndpointTest",
+      step: "downloadKof",
       matchedProject: projectCheck.matchedProject,
-      usedUrl: rootTest.usedUrl,
-      rootId: rootTest.rootId,
-      entryCount: rootTest.entryCount,
-      kofFiles: rootTest.kofFiles.map((f) => ({
-        id: f.id,
-        name: f.name,
-        path: f.path,
-        type: f.type,
-        size: f.size
-      })),
-      sampleEntries: rootTest.entries.slice(0, 20).map((f) => ({
-        id: f.id,
-        name: f.name,
-        path: f.path,
-        type: f.type,
-        size: f.size
-      })),
-      diagnostics: rootTest.diagnostics
+      rootUrl: rootList.url,
+      file: {
+        id: firstKof.id,
+        name: firstKof.name,
+        size: firstKof.size
+      },
+      downloadUrl: download.usedUrl,
+      preview: download.text.slice(0, 2000),
+      diagnostics: download.diagnostics
     });
   } catch (err) {
     console.error("Fatal error:", err);

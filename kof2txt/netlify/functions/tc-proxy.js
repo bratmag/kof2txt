@@ -149,6 +149,11 @@ async function tryCoreCandidates({ token, projectLocation, fileId, versionId }) 
 
   const candidates = [
     {
+  name: "fs-downloadurl",
+  url: `${base}/files/fs/${encodeURIComponent(fileId)}/downloadurl?versionId=${encodeURIComponent(versionId)}`,
+  bearer: true
+},
+    {
       name: "blobstore-versionId",
       url: `${base}/files/${encodeURIComponent(versionId)}/blobstore`,
       bearer: true

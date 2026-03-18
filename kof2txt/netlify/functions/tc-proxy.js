@@ -50,6 +50,8 @@ async function handleProbe(token, projectId, fileId, projectLocation) {
     `${urls.projects}/openapi`,
     `${urls.projects}/v3/api-docs`,
     `${urls.projects}/swagger-ui.html`,
+    `${urls.projects}/v2/api-docs`,
+    `${urls.projects}/api-docs`,
     // projects-api med prosjekt
     `${urls.projects}/projects`,
     `${urls.projects}/projects/${projectId}`,

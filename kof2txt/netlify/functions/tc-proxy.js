@@ -67,8 +67,6 @@ function safeHost(url) {
 function getCoreBaseUrl(projectLocation) {
   const loc = String(projectLocation || "").toLowerCase();
 
-  // Denne versjonen er laget for North America-test.
-  // Europe/Asia kan legges til senere hvis dere vil.
   if (loc === "northamerica" || loc === "us" || !loc) {
     return "https://app.connect.trimble.com/tc/api/2.0";
   }
@@ -123,9 +121,13 @@ async function fetchJsonWithBearer(url, token, extraHeaders = {}) {
 }
 
 async function fetchTextNoAuth(url) {
-  return fetchRaw(url, {
-    method: "GET"
-  }, 60000);
+  return fetchRaw(
+    url,
+    {
+      method: "GET"
+    },
+    60000
+  );
 }
 
 async function getFileMetadata({ token, projectLocation, fileId }) {
@@ -144,15 +146,36 @@ async function getFileMetadata({ token, projectLocation, fileId }) {
   };
 }
 
+async function getFileVersions({ token, projectLocation, fileId }) {
+  const base = getCoreBaseUrl(projectLocation);
+  const url = `${base}/files/${encodeURIComponent(fileId)}/versions?tokenThumburl=false`;
+
+  const res = await fetchJsonWithBearer(url, token);
+
+  return {
+    ok: res.ok,
+    url,
+    status: res.status,
+    contentType: res.contentType,
+    preview: shortText(res.text, 1000),
+    data: res.json
+  };
+}
+
 async function tryCoreCandidates({ token, projectLocation, fileId, versionId }) {
   const base = getCoreBaseUrl(projectLocation);
 
   const candidates = [
     {
-  name: "fs-downloadurl",
-  url: `${base}/files/fs/${encodeURIComponent(fileId)}/downloadurl?versionId=${encodeURIComponent(versionId)}`,
-  bearer: true
-},
+      name: "fs-downloadurl",
+      url: `${base}/files/fs/${encodeURIComponent(fileId)}/downloadurl?versionId=${encodeURIComponent(versionId)}`,
+      bearer: true
+    },
+    {
+      name: "fs-downloadurl-versionId-path",
+      url: `${base}/files/fs/${encodeURIComponent(versionId)}/downloadurl?versionId=${encodeURIComponent(versionId)}`,
+      bearer: true
+    },
     {
       name: "blobstore-versionId",
       url: `${base}/files/${encodeURIComponent(versionId)}/blobstore`,
@@ -235,6 +258,7 @@ async function tryCoreCandidates({ token, projectLocation, fileId, versionId }) 
           source: candidate.name,
           mode: "signedUrl",
           signedUrlHost: safeHost(signedUrl),
+          signedUrl,
           diagnostics,
           fileFetch: {
             status: fileRes.status,
@@ -306,7 +330,21 @@ async function handleDownloadKofFile(body) {
     });
   }
 
-  const versionId = metadata.data.versionId || metadata.data.id;
+  const versions = await getFileVersions({
+    token,
+    projectLocation,
+    fileId
+  });
+
+  let versionId = metadata.data.versionId || metadata.data.id;
+
+  if (versions.ok && Array.isArray(versions.data) && versions.data.length > 0) {
+    versionId =
+      versions.data[0]?.versionId ||
+      versions.data[0]?.id ||
+      versions.data[0]?.version?.id ||
+      versionId;
+  }
 
   const download = await tryCoreCandidates({
     token,
@@ -331,6 +369,11 @@ async function handleDownloadKofFile(body) {
       metadata: {
         status: metadata.status,
         preview: metadata.preview
+      },
+      versions: {
+        ok: versions.ok,
+        status: versions.status,
+        preview: versions.preview
       },
       download
     });
@@ -359,6 +402,10 @@ async function handleDownloadKofFile(body) {
         status: metadata.status,
         preview: metadata.preview
       },
+      versions: {
+        status: versions.status,
+        preview: versions.preview
+      },
       downloadDiagnostics: download.diagnostics
     }
   });
@@ -380,7 +427,21 @@ async function handleProbeCore(body) {
     fileId
   });
 
-  const versionId = metadata.data?.versionId || metadata.data?.id || fileId;
+  const versions = await getFileVersions({
+    token,
+    projectLocation,
+    fileId
+  });
+
+  let versionId = metadata.data?.versionId || metadata.data?.id || fileId;
+
+  if (versions.ok && Array.isArray(versions.data) && versions.data.length > 0) {
+    versionId =
+      versions.data[0]?.versionId ||
+      versions.data[0]?.id ||
+      versions.data[0]?.version?.id ||
+      versionId;
+  }
 
   const probe = await tryCoreCandidates({
     token,
@@ -402,6 +463,7 @@ async function handleProbeCore(body) {
       versionId
     },
     metadata,
+    versions,
     probeResult: probe
   });
 }

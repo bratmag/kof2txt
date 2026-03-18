@@ -117,7 +117,7 @@
       throw new Error("extension.requestPermission finnes ikke.");
     }
     const result = await state.api.extension.requestPermission("accesstoken");
-    debug("requestPermission result:", !!result);
+    debug("requestPermission result:", result);
     if (typeof result === "string" && result && result !== "pending" && result !== "denied") {
       state.accessToken = result;
       return result;

@@ -61,17 +61,23 @@ async function fetchJson(url, token) {
     status: res.status,
     ok: res.ok,
     text,
-    json
+    json,
+    contentType: res.headers.get("content-type") || ""
   };
 }
 
-async function fetchText(url, token) {
+async function fetchText(url, token, useAuth = true) {
+  const headers = {
+    Accept: "*/*"
+  };
+
+  if (useAuth) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
   const res = await fetch(url, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "*/*"
-    }
+    headers
   });
 
   const text = await res.text();
@@ -165,22 +171,6 @@ function looksLikeFileMetadata(text, contentType) {
     return false;
   }
 
-  if (contentType.toLowerCase().includes("application/json")) {
-    try {
-      const obj = JSON.parse(text);
-      return !!(
-        obj &&
-        typeof obj === "object" &&
-        obj.id &&
-        obj.name &&
-        obj.type &&
-        obj.versionId
-      );
-    } catch {
-      return false;
-    }
-  }
-
   try {
     const obj = JSON.parse(text);
     return !!(
@@ -192,8 +182,96 @@ function looksLikeFileMetadata(text, contentType) {
       obj.versionId
     );
   } catch {
-    return false;
+    return contentType.toLowerCase().includes("application/json");
   }
+}
+
+function recursivelyCollectUrls(value, found = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      recursivelyCollectUrls(item, found);
+    }
+    return found;
+  }
+
+  if (!value || typeof value !== "object") {
+    return found;
+  }
+
+  for (const [key, val] of Object.entries(value)) {
+    if (typeof val === "string") {
+      const lowerKey = key.toLowerCase();
+      const lowerVal = val.toLowerCase();
+
+      if (
+        val.startsWith("http://") ||
+        val.startsWith("https://")
+      ) {
+        found.push({
+          key,
+          url: val
+        });
+      } else if (
+        (lowerKey.includes("url") ||
+          lowerKey.includes("href") ||
+          lowerKey.includes("link")) &&
+        val.startsWith("/")
+      ) {
+        found.push({
+          key,
+          url: `https://app.connect.trimble.com${val}`
+        });
+      } else if (
+        lowerKey === "id" &&
+        lowerVal.length > 10
+      ) {
+        // ignorér rene id-felter
+      }
+    } else if (typeof val === "object" && val !== null) {
+      recursivelyCollectUrls(val, found);
+    }
+  }
+
+  return found;
+}
+
+function rankDownloadCandidates(items) {
+  const scored = items.map((item) => {
+    const lowerUrl = item.url.toLowerCase();
+    let score = 0;
+
+    if (lowerUrl.includes("/download")) score += 100;
+    if (lowerUrl.includes("/content")) score += 80;
+    if (lowerUrl.includes("/data/")) score += 60;
+    if (lowerUrl.includes("download=true")) score += 50;
+    if (lowerUrl.includes("content=true")) score += 40;
+
+    if (lowerUrl.includes("thumbnail")) score -= 100;
+    if (lowerUrl.includes("thumb")) score -= 100;
+    if (lowerUrl.includes(".png")) score -= 50;
+    if (lowerUrl.includes(".jpg")) score -= 50;
+    if (lowerUrl.includes(".jpeg")) score -= 50;
+    if (lowerUrl.includes(".webp")) score -= 50;
+
+    return {
+      ...item,
+      score
+    };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  const deduped = [];
+  const seen = new Set();
+
+  for (const item of scored) {
+    if (!seen.has(item.url)) {
+      seen.add(item.url);
+      deduped.push(item);
+    }
+  }
+
+  return deduped;
 }
 
 async function validateAndFindProject(project, accessToken) {
@@ -292,23 +370,56 @@ async function listRootItems(projectId, rootId, accessToken) {
 }
 
 async function downloadKofFile(fileId, accessToken) {
-  const candidates = [
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/download`,
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/content`,
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}?download=true`,
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}?content=true`,
-    `https://app.connect.trimble.com/tc/api/2.0/data/${fileId}`,
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}`
-  ];
-
   const diagnostics = [];
 
-  for (const url of candidates) {
+  const metadataUrl = `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}`;
+  const metadataRes = await fetchJson(metadataUrl, accessToken);
+
+  diagnostics.push({
+    stage: "metadata",
+    url: metadataUrl,
+    status: metadataRes.status,
+    ok: metadataRes.ok,
+    contentType: metadataRes.contentType,
+    preview: metadataRes.text.slice(0, 300)
+  });
+
+  if (!metadataRes.ok || !metadataRes.json) {
+    return {
+      ok: false,
+      error: "Klarte ikke hente filmetadata.",
+      diagnostics
+    };
+  }
+
+  const metadata = metadataRes.json;
+
+  const directCandidates = [
+    { source: "guessed", url: `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/download`, useAuth: true },
+    { source: "guessed", url: `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/content`, useAuth: true },
+    { source: "guessed", url: `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}?download=true`, useAuth: true },
+    { source: "guessed", url: `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}?content=true`, useAuth: true },
+    { source: "guessed", url: `https://app.connect.trimble.com/tc/api/2.0/data/${fileId}`, useAuth: true }
+  ];
+
+  const metadataUrls = rankDownloadCandidates(
+    recursivelyCollectUrls(metadata).map((x) => ({
+      source: `metadata:${x.key}`,
+      url: x.url,
+      useAuth: !x.url.includes("/tc/api/2.0/data/")
+    }))
+  );
+
+  const allCandidates = [...directCandidates, ...metadataUrls];
+
+  for (const candidate of allCandidates) {
     try {
-      const result = await fetchText(url, accessToken);
+      const result = await fetchText(candidate.url, accessToken, candidate.useAuth);
 
       diagnostics.push({
-        url,
+        stage: "download-attempt",
+        source: candidate.source,
+        url: candidate.url,
         status: result.status,
         ok: result.ok,
         contentType: result.contentType,
@@ -329,14 +440,25 @@ async function downloadKofFile(fileId, accessToken) {
 
       return {
         ok: true,
-        usedUrl: url,
+        usedUrl: candidate.url,
+        source: candidate.source,
         text: result.text,
         contentType: result.contentType,
-        diagnostics
+        diagnostics,
+        metadataPreview: {
+          id: metadata.id,
+          name: metadata.name,
+          type: metadata.type,
+          versionId: metadata.versionId,
+          status: metadata.status,
+          hash: metadata.hash
+        }
       };
     } catch (err) {
       diagnostics.push({
-        url,
+        stage: "download-attempt",
+        source: candidate.source,
+        url: candidate.url,
         ok: false,
         error: String(err?.message || err)
       });
@@ -346,7 +468,8 @@ async function downloadKofFile(fileId, accessToken) {
   return {
     ok: false,
     error: "Fant ikke fungerende nedlastings-endepunkt ennå.",
-    diagnostics
+    diagnostics,
+    metadataKeys: Object.keys(metadata)
   };
 }
 
@@ -511,7 +634,9 @@ async function downloadKofFile(fileId, accessToken) {
         size: firstKof.size
       },
       downloadUrl: download.usedUrl,
+      downloadSource: download.source,
       contentType: download.contentType,
+      metadataPreview: download.metadataPreview,
       preview: download.text.slice(0, 2000),
       diagnostics: download.diagnostics
     });

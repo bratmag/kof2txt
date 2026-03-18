@@ -22,11 +22,6 @@ function getUrls(loc) {
     wopi: "https://wopi-api-eu.connect.trimble.com/v1",
     projects: "https://projects-api-eu.connect.trimble.com/v1"
   };
-  if (l === "asia") return {
-    core: "https://app31.connect.trimble.com/tc/api/2.0",
-    wopi: "https://wopi-api-ap.connect.trimble.com/v1",
-    projects: "https://projects-api-ap.connect.trimble.com/v1"
-  };
   return {
     core: "https://app.connect.trimble.com/tc/api/2.0",
     wopi: "https://wopi-api.connect.trimble.com/v1",
@@ -43,12 +38,47 @@ async function fetchAny(url, options = {}) {
   return { ok: response.ok, status: response.status, contentType, text, json: parsed };
 }
 
+// ─── probe: utforsk hva projects-api og wopi faktisk tilbyr ──────────────────
+async function handleProbe(token, projectId, fileId, projectLocation) {
+  const urls = getUrls(projectLocation);
+  const auth = { Authorization: `Bearer ${token}` };
+  const results = [];
+
+  const probeUrls = [
+    // projects-api rot
+    `${urls.projects}/`,
+    `${urls.projects}/openapi`,
+    `${urls.projects}/v3/api-docs`,
+    `${urls.projects}/swagger-ui.html`,
+    // projects-api med prosjekt
+    `${urls.projects}/projects`,
+    `${urls.projects}/projects/${projectId}`,
+    `${urls.projects}/projects/${projectId}/files`,
+    `${urls.projects}/projects/${projectId}/folders`,
+    // wopi rot
+    `${urls.wopi}/`,
+    `${urls.wopi}/files/${fileId}`,
+    `${urls.wopi}/projects/${projectId}/files/${fileId}`,
+  ];
+
+  for (const url of probeUrls) {
+    try {
+      const r = await fetchAny(url, { method: "GET", headers: { ...auth, Accept: "application/json" } });
+      results.push({ url, status: r.status, contentType: r.contentType, preview: r.text.slice(0, 300) });
+    } catch (err) {
+      results.push({ url, error: String(err) });
+    }
+  }
+
+  return json(200, { ok: true, results });
+}
+
+// ─── downloadKofFile ─────────────────────────────────────────────────────────
 async function handleDownloadKofFile(token, fileId, projectLocation, projectId) {
   const urls = getUrls(projectLocation);
   const auth = { Authorization: `Bearer ${token}` };
   const diagnostics = { fileId, projectId, projectLocation, urls, steps: [] };
 
-  // Steg 1: Metadata
   let versionId = fileId;
   try {
     const metaUrl = `${urls.core}/files/${encodeURIComponent(fileId)}`;
@@ -60,56 +90,34 @@ async function handleDownloadKofFile(token, fileId, projectLocation, projectId) 
   }
   diagnostics.versionId = versionId;
 
-  // Kandidater — projects-api med prosjekt-kontekst
   const pid = projectId || "";
   const candidates = [
-    // projects-api med prosjekt-ID i path
     { label: "projects-api/proj/files/download",    url: `${urls.projects}/projects/${pid}/files/${fileId}/download` },
     { label: "projects-api/proj/files/content",     url: `${urls.projects}/projects/${pid}/files/${fileId}/content` },
     { label: "projects-api/proj/files/transfer",    url: `${urls.projects}/projects/${pid}/files/${fileId}/transfer` },
-    // projects-api med versjon
     { label: "projects-api/proj/versions/download", url: `${urls.projects}/projects/${pid}/files/${fileId}/versions/${versionId}/download` },
-    // WOPI med prosjekt-kontekst
     { label: "wopi/proj/files/contents",            url: `${urls.wopi}/projects/${pid}/files/${fileId}/contents` },
-    // Core: prøv GET uten Accept-header (noen ganger gir det binærinnhold)
     { label: "core-no-accept",                      url: `${urls.core}/files/${fileId}`, noAccept: true },
-    // Core: HEAD for å se om det er redirect
-    { label: "core-head",                           url: `${urls.core}/files/${fileId}`, method: "HEAD" },
   ];
 
   for (const c of candidates) {
     try {
       const headers = c.noAccept ? { Authorization: `Bearer ${token}` } : { ...auth, Accept: "application/json" };
-      const method = c.method || "GET";
-      const res = await fetchAny(c.url, { method, headers, redirect: "follow" });
+      const res = await fetchAny(c.url, { method: "GET", headers, redirect: "follow" });
       const isJson = res.contentType.includes("application/json") || res.contentType.includes("problem+json");
 
-      diagnostics.steps.push({
-        step: c.label,
-        url: c.url,
-        method,
-        status: res.status,
-        ok: res.ok,
-        contentType: res.contentType,
-        preview: res.text.slice(0, 400)
-      });
+      diagnostics.steps.push({ step: c.label, url: c.url, status: res.status, ok: res.ok, contentType: res.contentType, preview: res.text.slice(0, 300) });
 
       if (!res.ok) continue;
 
-      // Pre-signed URL i JSON
-      const presignedUrl = res.json?.url || res.json?.downloadUrl || res.json?.href
-        || res.json?.transferUrl || res.json?.fileUrl || null;
+      const presignedUrl = res.json?.url || res.json?.downloadUrl || res.json?.href || res.json?.transferUrl || res.json?.fileUrl || null;
       if (isJson && presignedUrl) {
-        diagnostics.steps.push({ step: "presigned-found", url: presignedUrl.slice(0, 100) });
         const fileRes = await fetchAny(presignedUrl, { method: "GET" });
-        diagnostics.steps.push({ step: "presigned-fetch", status: fileRes.status, ok: fileRes.ok, bytes: fileRes.text.length, preview: fileRes.text.slice(0, 200) });
-        if (fileRes.ok) {
-          return json(200, { ok: true, fileId, versionId, source: c.label, via: "presigned", content: fileRes.text, diagnostics });
-        }
+        diagnostics.steps.push({ step: "presigned-fetch", status: fileRes.status, ok: fileRes.ok, bytes: fileRes.text.length });
+        if (fileRes.ok) return json(200, { ok: true, fileId, versionId, source: c.label, via: "presigned", content: fileRes.text, diagnostics });
         continue;
       }
 
-      // Direkte filinnhold
       if (!isJson && res.text.length > 10) {
         return json(200, { ok: true, fileId, versionId, source: c.label, via: "direct", content: res.text, diagnostics });
       }
@@ -121,6 +129,7 @@ async function handleDownloadKofFile(token, fileId, projectLocation, projectId) 
   return json(502, { ok: false, error: "Alle strategier feilet.", fileId, versionId, diagnostics });
 }
 
+// ─── Handler ─────────────────────────────────────────────────────────────────
 exports.handler = async function (event) {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" }, body: "" };
@@ -133,6 +142,10 @@ exports.handler = async function (event) {
 
   const { action, token, url, method, fileId, projectLocation, projectId } = data;
   if (!token) return json(400, { ok: false, error: "Missing token" });
+
+  if (action === "probe") {
+    return handleProbe(token, projectId, fileId, projectLocation);
+  }
 
   if (action === "downloadKofFile") {
     if (!fileId) return json(400, { ok: false, error: "Missing fileId" });

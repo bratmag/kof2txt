@@ -337,6 +337,15 @@
   }
 
   function outputError(errObj) {
+    // Vis diagnostics-tabell hvis tilgjengelig
+    const steps = errObj?.download?.proxyResult?.diagnostics?.steps
+      || errObj?.list?.diagnostics?.tried
+      || errObj?.diagnostics?.steps
+      || null;
+    if (steps && window.showDiagnostics) {
+      window._lastDiagnostics = errObj;
+      window.showDiagnostics(steps);
+    }
     setOutput(errObj);
   }
 

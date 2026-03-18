@@ -1,0 +1,3 @@
+[build]
+  publish = "kof2txt"
+  functions = "netlify/functions"

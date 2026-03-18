@@ -4,23 +4,9 @@
   const CONFIG = {
     DEBUG: true,
     CONNECT_TIMEOUT_MS: 30000,
-    AUTO_PROCESS_ON_FILE_SELECTED: true,
-    PROXY_URL: "/.netlify/functions/tc-proxy"
-  };
-
-  const els = {
-    status:
-      document.getElementById("status") ||
-      document.getElementById("statusText") ||
-      null,
-    output:
-      document.getElementById("output") ||
-      document.getElementById("result") ||
-      null,
-    runBtn:
-      document.getElementById("runBtn") ||
-      document.getElementById("startBtn") ||
-      null
+    PROXY_URL: "/.netlify/functions/tc-proxy",
+    DEFAULT_TEST_FILE_ID: "RZPc08vH2VU",
+    DEFAULT_TEST_FILE_NAME: "Eiendomspunkter kof.kof"
   };
 
   const state = {
@@ -30,6 +16,8 @@
     selectedFile: null,
     lastResult: null
   };
+
+  let ui = {};
 
   function log(...args) {
     console.log(...args);
@@ -41,7 +29,7 @@
 
   function setStatus(message) {
     log(`[STATUS] ${message}`);
-    if (els.status) els.status.textContent = message;
+    if (ui.status) ui.status.textContent = message;
 
     if (state.api?.extension?.setStatusMessage) {
       state.api.extension.setStatusMessage(message).catch(() => {});
@@ -51,19 +39,16 @@
   function setOutput(data) {
     log("[OUTPUT]");
     log(data);
-    if (els.output) {
-      els.output.textContent =
+
+    if (ui.output) {
+      ui.output.textContent =
         typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
   }
 
-  function shortText(text, len = 1200) {
+  function shortText(text, len = 1500) {
     if (typeof text !== "string") return text;
     return text.length > len ? text.slice(0, len) + "..." : text;
-  }
-
-  function isKofFile(file) {
-    return /\.kof$/i.test(String(file?.name || ""));
   }
 
   function safeJsonParse(text) {
@@ -104,17 +89,186 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function fileLikeFromEventArg(arg) {
-    if (!arg) return null;
+  function isKofFileName(name) {
+    return /\.kof$/i.test(String(name || ""));
+  }
 
-    if (arg.id && arg.name) return arg;
-    if (arg.data?.id && arg.data?.name) return arg.data;
-    if (arg.file?.id && arg.file?.name) return arg.file;
+  function ensureKofFileName(name) {
+    const n = String(name || "").trim();
+    if (!n) return "output.kof";
+    return isKofFileName(n) ? n : `${n}.kof`;
+  }
 
-    if (Array.isArray(arg.files) && arg.files.length) return arg.files[0];
-    if (Array.isArray(arg.data?.files) && arg.data.files.length) return arg.data.files[0];
+  function fileFromInputs() {
+    const id = String(ui.fileIdInput?.value || "").trim();
+    const name = ensureKofFileName(ui.fileNameInput?.value || "");
 
-    return null;
+    if (!id) return null;
+
+    return { id, name };
+  }
+
+  function setInputsFromFile(file) {
+    if (!file) return;
+    if (ui.fileIdInput) ui.fileIdInput.value = file.id || "";
+    if (ui.fileNameInput) ui.fileNameInput.value = file.name || "";
+  }
+
+  function buildUi() {
+    document.body.innerHTML = "";
+
+    const root = document.createElement("div");
+    root.style.fontFamily = "Arial, sans-serif";
+    root.style.fontSize = "14px";
+    root.style.padding = "12px";
+    root.style.color = "#222";
+
+    const title = document.createElement("h2");
+    title.textContent = "KOF2TXT";
+    title.style.margin = "0 0 10px 0";
+
+    const info = document.createElement("div");
+    info.style.marginBottom = "12px";
+    info.style.lineHeight = "1.4";
+    info.textContent =
+      "Lim inn File ID og filnavn manuelt, og trykk Konverter KOF.";
+
+    const projectBox = document.createElement("div");
+    projectBox.style.padding = "8px";
+    projectBox.style.marginBottom = "12px";
+    projectBox.style.background = "#f5f5f5";
+    projectBox.style.border = "1px solid #ddd";
+    projectBox.style.borderRadius = "6px";
+
+    const projectLabel = document.createElement("div");
+    projectLabel.textContent = "Prosjekt:";
+    projectLabel.style.fontWeight = "bold";
+
+    const projectValue = document.createElement("div");
+    projectValue.textContent = "-";
+
+    projectBox.appendChild(projectLabel);
+    projectBox.appendChild(projectValue);
+
+    const form = document.createElement("div");
+    form.style.display = "grid";
+    form.style.gridTemplateColumns = "1fr";
+    form.style.gap = "10px";
+    form.style.marginBottom = "12px";
+
+    const fileIdWrap = document.createElement("div");
+    const fileIdLabel = document.createElement("label");
+    fileIdLabel.textContent = "File ID";
+    fileIdLabel.style.display = "block";
+    fileIdLabel.style.fontWeight = "bold";
+    fileIdLabel.style.marginBottom = "4px";
+
+    const fileIdInput = document.createElement("input");
+    fileIdInput.type = "text";
+    fileIdInput.placeholder = "F.eks. RZPc08vH2VU";
+    fileIdInput.style.width = "100%";
+    fileIdInput.style.boxSizing = "border-box";
+    fileIdInput.style.padding = "8px";
+
+    fileIdWrap.appendChild(fileIdLabel);
+    fileIdWrap.appendChild(fileIdInput);
+
+    const fileNameWrap = document.createElement("div");
+    const fileNameLabel = document.createElement("label");
+    fileNameLabel.textContent = "Filnavn";
+    fileNameLabel.style.display = "block";
+    fileNameLabel.style.fontWeight = "bold";
+    fileNameLabel.style.marginBottom = "4px";
+
+    const fileNameInput = document.createElement("input");
+    fileNameInput.type = "text";
+    fileNameInput.placeholder = "F.eks. Eiendomspunkter kof.kof";
+    fileNameInput.style.width = "100%";
+    fileNameInput.style.boxSizing = "border-box";
+    fileNameInput.style.padding = "8px";
+
+    fileNameWrap.appendChild(fileNameLabel);
+    fileNameWrap.appendChild(fileNameInput);
+
+    form.appendChild(fileIdWrap);
+    form.appendChild(fileNameWrap);
+
+    const buttons = document.createElement("div");
+    buttons.style.display = "flex";
+    buttons.style.flexWrap = "wrap";
+    buttons.style.gap = "8px";
+    buttons.style.marginBottom = "12px";
+
+    const convertBtn = document.createElement("button");
+    convertBtn.textContent = "Konverter KOF";
+    convertBtn.style.padding = "10px 14px";
+    convertBtn.style.cursor = "pointer";
+
+    const testBtn = document.createElement("button");
+    testBtn.textContent = "Bruk testfil";
+    testBtn.style.padding = "10px 14px";
+    testBtn.style.cursor = "pointer";
+
+    const probeBtn = document.createElement("button");
+    probeBtn.textContent = "Core probe";
+    probeBtn.style.padding = "10px 14px";
+    probeBtn.style.cursor = "pointer";
+
+    buttons.appendChild(convertBtn);
+    buttons.appendChild(testBtn);
+    buttons.appendChild(probeBtn);
+
+    const statusBox = document.createElement("div");
+    statusBox.style.padding = "8px";
+    statusBox.style.background = "#eef5ff";
+    statusBox.style.border = "1px solid #cddff7";
+    statusBox.style.borderRadius = "6px";
+    statusBox.style.marginBottom = "12px";
+    statusBox.textContent = "Starter...";
+
+    const help = document.createElement("div");
+    help.style.fontSize = "12px";
+    help.style.color = "#555";
+    help.style.lineHeight = "1.5";
+    help.style.marginBottom = "12px";
+    help.innerHTML =
+      "Tips: Du kan bruke testfila direkte, eller lime inn File ID manuelt. " +
+      "Filnavn brukes til navn på nedlastet .txt-fil.";
+
+    const output = document.createElement("pre");
+    output.style.whiteSpace = "pre-wrap";
+    output.style.wordBreak = "break-word";
+    output.style.background = "#111";
+    output.style.color = "#eaeaea";
+    output.style.padding = "10px";
+    output.style.borderRadius = "6px";
+    output.style.minHeight = "180px";
+    output.style.maxHeight = "420px";
+    output.style.overflow = "auto";
+    output.textContent = "";
+
+    root.appendChild(title);
+    root.appendChild(info);
+    root.appendChild(projectBox);
+    root.appendChild(form);
+    root.appendChild(buttons);
+    root.appendChild(statusBox);
+    root.appendChild(help);
+    root.appendChild(output);
+
+    document.body.appendChild(root);
+
+    ui = {
+      root,
+      projectValue,
+      fileIdInput,
+      fileNameInput,
+      convertBtn,
+      testBtn,
+      probeBtn,
+      status: statusBox,
+      output
+    };
   }
 
   async function connectWorkspace() {
@@ -183,6 +337,11 @@
 
     state.project = project;
     debug("Project:", project);
+
+    if (ui.projectValue) {
+      ui.projectValue.textContent = `${project.name || "-"} (${project.id}) | region: ${project.location || "-"}`;
+    }
+
     return project;
   }
 
@@ -213,271 +372,201 @@
     };
   }
 
-function convertKofToTxt(kofText) {
-  const points = parseKofPoints(kofText);
+  function convertKofToTxt(kofText) {
+    const points = parseKofPoints(kofText);
 
-  if (!points.length) {
-    return [
-      "Punktnavn,Nord,Øst,Høyde",
-      "# Fant ingen punkter i KOF-fila",
-      "# Første 1000 tegn fra fila:",
-      ...String(kofText || "").slice(0, 1000).split(/\r?\n/)
-    ].join("\n");
+    if (!points.length) {
+      return [
+        "Punktnavn,Nord,Øst,Høyde",
+        "# Fant ingen punkter i KOF-fila",
+        "# Første 1000 tegn fra fila:",
+        ...String(kofText || "").slice(0, 1000).split(/\r?\n/)
+      ].join("\n");
+    }
+
+    const lines = ["Punktnavn,Nord,Øst,Høyde"];
+
+    for (const p of points) {
+      lines.push([
+        csvEscape(p.name || ""),
+        formatNumberForTxt(p.north),
+        formatNumberForTxt(p.east),
+        formatNumberForTxt(p.height)
+      ].join(","));
+    }
+
+    return lines.join("\n");
   }
 
-  const lines = ["Punktnavn,Nord,Øst,Høyde"];
+  function parseKofPoints(kofText) {
+    const text = String(kofText || "");
+    const lines = text.split(/\r?\n/);
 
-  for (const p of points) {
-    lines.push([
-      csvEscape(p.name || ""),
-      formatNumberForTxt(p.north),
-      formatNumberForTxt(p.east),
-      formatNumberForTxt(p.height)
-    ].join(","));
-  }
+    const points = [];
+    let current = {};
 
-  return lines.join("\n");
-}
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
 
-function parseKofPoints(kofText) {
-  const text = String(kofText || "");
-  const lines = text.split(/\r?\n/);
-
-  const points = [];
-  let current = {};
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    // Ny blokk / nytt objekt
-    if (
-      /^OBJ/i.test(line) ||
-      /^PUNKT/i.test(line) ||
-      /^POINT/i.test(line) ||
-      /^BEGIN/i.test(line)
-    ) {
-      if (isCompletePoint(current)) {
-        points.push(normalizePoint(current));
+      if (/^OBJ/i.test(line) || /^PUNKT/i.test(line) || /^POINT/i.test(line) || /^BEGIN/i.test(line)) {
+        if (isCompletePoint(current)) points.push(normalizePoint(current));
+        current = {};
+        continue;
       }
-      current = {};
-      continue;
-    }
 
-    // Slutt på blokk
-    if (
-      /^END/i.test(line) ||
-      /^SLUTT/i.test(line)
-    ) {
-      if (isCompletePoint(current)) {
-        points.push(normalizePoint(current));
+      if (/^END/i.test(line) || /^SLUTT/i.test(line)) {
+        if (isCompletePoint(current)) points.push(normalizePoint(current));
+        current = {};
+        continue;
       }
-      current = {};
-      continue;
-    }
 
-    // Nøkkel=verdi eller nøkkel: verdi
-    const kv = line.match(/^([^=:]+)\s*[:=]\s*(.+)$/);
-    if (kv) {
-      const key = normalizeKey(kv[1]);
-      const value = kv[2].trim();
+      const kv = line.match(/^([^=:]+)\s*[:=]\s*(.+)$/);
+      if (kv) {
+        const key = normalizeKey(kv[1]);
+        const value = kv[2].trim();
 
-      if (!current.name && isNameKey(key)) current.name = cleanValue(value);
-      if (current.north == null && isNorthKey(key)) current.north = parseNumber(value);
-      if (current.east == null && isEastKey(key)) current.east = parseNumber(value);
-      if (current.height == null && isHeightKey(key)) current.height = parseNumber(value);
-
-      continue;
-    }
-
-    // Frie linjer: prøv å finne "navn + 3 tall"
-    // Eks: P1 6643210.123 245678.456 123.789
-    const free = tryParseFreePointLine(line);
-    if (free) {
-      if (isCompletePoint(current)) {
-        points.push(normalizePoint(current));
+        if (!current.name && isNameKey(key)) current.name = cleanValue(value);
+        if (current.north == null && isNorthKey(key)) current.north = parseNumber(value);
+        if (current.east == null && isEastKey(key)) current.east = parseNumber(value);
+        if (current.height == null && isHeightKey(key)) current.height = parseNumber(value);
+        continue;
       }
-      current = free;
-      continue;
+
+      const free = tryParseFreePointLine(line);
+      if (free) {
+        if (isCompletePoint(current)) points.push(normalizePoint(current));
+        current = free;
+      }
     }
+
+    if (isCompletePoint(current)) points.push(normalizePoint(current));
+
+    return dedupePoints(points);
   }
 
-  if (isCompletePoint(current)) {
-    points.push(normalizePoint(current));
+  function tryParseFreePointLine(line) {
+    const m = line.match(
+      /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)$/
+    );
+
+    if (!m) return null;
+
+    return {
+      name: m[1],
+      north: parseNumber(m[2]),
+      east: parseNumber(m[3]),
+      height: parseNumber(m[4])
+    };
   }
 
-  // Fjern duplikater på navn+nord+øst+høyde
-  return dedupePoints(points);
-}
-
-function tryParseFreePointLine(line) {
-  const m = line.match(
-    /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)$/
-  );
-
-  if (!m) return null;
-
-  return {
-    name: m[1],
-    north: parseNumber(m[2]),
-    east: parseNumber(m[3]),
-    height: parseNumber(m[4])
-  };
-}
-
-function isCompletePoint(p) {
-  return !!p && p.name && p.north != null && p.east != null;
-}
-
-function normalizePoint(p) {
-  return {
-    name: String(p.name || "").trim(),
-    north: p.north != null ? Number(p.north) : null,
-    east: p.east != null ? Number(p.east) : null,
-    height: p.height != null ? Number(p.height) : null
-  };
-}
-
-function dedupePoints(points) {
-  const seen = new Set();
-  const out = [];
-
-  for (const p of points) {
-    const key = `${p.name}|${p.north}|${p.east}|${p.height}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(p);
+  function isCompletePoint(p) {
+    return !!p && p.name && p.north != null && p.east != null;
   }
 
-  return out;
-}
-
-function normalizeKey(key) {
-  return String(key || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[æøå]/g, (c) => ({ "æ": "ae", "ø": "o", "å": "a" }[c]))
-    .replace(/[^a-z0-9]/g, "");
-}
-
-function cleanValue(value) {
-  return String(value || "").trim().replace(/^"|"$/g, "");
-}
-
-function parseNumber(value) {
-  if (value == null) return null;
-
-  const s = String(value)
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(",", ".");
-
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
-function formatNumberForTxt(n) {
-  if (n == null || !Number.isFinite(n)) return "";
-  return String(n);
-}
-
-function csvEscape(value) {
-  const s = String(value ?? "");
-  if (/[",;\n]/.test(s)) {
-    return `"${s.replace(/"/g, '""')}"`;
+  function normalizePoint(p) {
+    return {
+      name: String(p.name || "").trim(),
+      north: p.north != null ? Number(p.north) : null,
+      east: p.east != null ? Number(p.east) : null,
+      height: p.height != null ? Number(p.height) : null
+    };
   }
-  return s;
-}
 
-function isNameKey(key) {
-  return [
-    "punktnavn",
-    "punktnummer",
-    "punktnr",
-    "punktid",
-    "punkt",
-    "navn",
-    "name",
-    "id",
-    "label"
-  ].includes(key);
-}
+  function dedupePoints(points) {
+    const seen = new Set();
+    const out = [];
 
-function isNorthKey(key) {
-  return [
-    "n",
-    "nord",
-    "north",
-    "northing",
-    "y"
-  ].includes(key);
-}
+    for (const p of points) {
+      const key = `${p.name}|${p.north}|${p.east}|${p.height}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(p);
+    }
 
-function isEastKey(key) {
-  return [
-    "e",
-    "ost",
-    "east",
-    "easting",
-    "x"
-  ].includes(key);
-}
+    return out;
+  }
 
-function isHeightKey(key) {
-  return [
-    "h",
-    "z",
-    "hoyde",
-    "height",
-    "elev",
-    "elevation",
-    "kote"
-  ].includes(key);
-}
+  function normalizeKey(key) {
+    return String(key || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[æøå]/g, (c) => ({ "æ": "ae", "ø": "o", "å": "a" }[c]))
+      .replace(/[^a-z0-9]/g, "");
+  }
+
+  function cleanValue(value) {
+    return String(value || "").trim().replace(/^"|"$/g, "");
+  }
+
+  function parseNumber(value) {
+    if (value == null) return null;
+
+    const s = String(value)
+      .trim()
+      .replace(/\s+/g, "")
+      .replace(",", ".");
+
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function formatNumberForTxt(n) {
+    if (n == null || !Number.isFinite(n)) return "";
+    return String(n);
+  }
+
+  function csvEscape(value) {
+    const s = String(value ?? "");
+    if (/[",;\n]/.test(s)) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  }
+
+  function isNameKey(key) {
+    return ["punktnavn", "punktnummer", "punktnr", "punktid", "punkt", "navn", "name", "id", "label"].includes(key);
+  }
+
+  function isNorthKey(key) {
+    return ["n", "nord", "north", "northing", "y"].includes(key);
+  }
+
+  function isEastKey(key) {
+    return ["e", "ost", "east", "easting", "x"].includes(key);
+  }
+
+  function isHeightKey(key) {
+    return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key);
   }
 
   async function processSelectedFile() {
     try {
-      if (!state.api) {
-        throw new Error("Ikke koblet til Workspace API.");
-      }
+      if (!state.api) throw new Error("Ikke koblet til Workspace API.");
+      if (!state.accessToken) await requestAccessToken();
+      if (!state.project) await getProject();
 
-      if (!state.accessToken) {
-        await requestAccessToken();
-      }
-
-      if (!state.project) {
-        await getProject();
-      }
-
-      if (!state.selectedFile) {
-        setStatus("Velg en .kof-fil i Trimble Connect først.");
+      const file = fileFromInputs();
+      if (!file) {
+        setStatus("Mangler File ID");
         setOutput({
           ok: false,
           step: "noSelectedFile",
-          message: "Ingen fil valgt. Marker eller åpne en .kof-fil i Trimble Connect."
+          message: "Skriv inn File ID først."
         });
         return;
       }
 
-      if (!isKofFile(state.selectedFile)) {
-        setStatus("Valgt fil er ikke en .kof-fil");
-        setOutput({
-          ok: false,
-          step: "wrongFileType",
-          file: state.selectedFile
-        });
-        return;
-      }
+      state.selectedFile = file;
 
-      setStatus(`Laster ned ${state.selectedFile.name} ...`);
+      setStatus(`Laster ned ${file.name} ...`);
 
       const proxyRes = await callProxy("downloadKofFile", {
         token: state.accessToken,
         projectId: state.project.id,
         projectLocation: state.project.location,
-        fileId: state.selectedFile.id,
-        fileName: state.selectedFile.name
+        fileId: file.id,
+        fileName: file.name
       });
 
       if (!proxyRes.ok || !proxyRes.json) {
@@ -529,23 +618,25 @@ function isHeightKey(key) {
       if (!state.accessToken) await requestAccessToken();
       if (!state.project) await getProject();
 
-      if (!state.selectedFile?.id) {
+      const file = fileFromInputs();
+      if (!file?.id) {
         setOutput({
           ok: false,
           step: "probeNoFile",
-          message: "Velg en .kof-fil først, så kan probe kjøre mot valgt fil."
+          message: "Skriv inn File ID først."
         });
         return;
       }
 
+      state.selectedFile = file;
       setStatus("Kjører Core probe...");
 
       const proxyRes = await callProxy("probeCore", {
         token: state.accessToken,
         projectId: state.project.id,
         projectLocation: state.project.location,
-        fileId: state.selectedFile.id,
-        fileName: state.selectedFile.name
+        fileId: file.id,
+        fileName: file.name
       });
 
       setStatus("Core probe ferdig");
@@ -561,52 +652,52 @@ function isHeightKey(key) {
     }
   }
 
+  function useTestFile() {
+    const testFile = {
+      id: CONFIG.DEFAULT_TEST_FILE_ID,
+      name: CONFIG.DEFAULT_TEST_FILE_NAME
+    };
+
+    state.selectedFile = testFile;
+    setInputsFromFile(testFile);
+
+    setStatus(`Testfil satt: ${testFile.name}`);
+    setOutput({
+      ok: true,
+      message: "Testfil satt i inputfeltene",
+      file: testFile
+    });
+  }
+
   function onWorkspaceEvent(event, args) {
     debug("[TC EVENT]", event, args);
+  }
 
-    if (event === "extension.fileSelected" || event === "extension.fileViewClicked") {
-      const file = fileLikeFromEventArg(args);
+  function wireUi() {
+    ui.convertBtn.addEventListener("click", () => {
+      processSelectedFile();
+    });
 
-      if (!file) {
-        debug("Fikk file-event, men klarte ikke lese filobjektet.");
-        return;
-      }
+    ui.testBtn.addEventListener("click", () => {
+      useTestFile();
+    });
 
-      state.selectedFile = file;
-
-      setStatus(`Valgt fil: ${file.name}`);
-      setOutput({
-        ok: true,
-        message: "Fil valgt i Trimble Connect",
-        file: {
-          id: file.id,
-          name: file.name,
-          type: file.type,
-          versionId: file.versionId
-        }
-      });
-
-      if (CONFIG.AUTO_PROCESS_ON_FILE_SELECTED && isKofFile(file)) {
-        processSelectedFile().catch((err) => {
-          console.error(err);
-          setStatus("Feil");
-          setOutput({
-            ok: false,
-            error: err?.message || String(err)
-          });
-        });
-      }
-    }
+    ui.probeBtn.addEventListener("click", () => {
+      runCoreProbe();
+    });
   }
 
   async function init() {
     try {
+      buildUi();
+      wireUi();
+
       setStatus("Starter...");
       await connectWorkspace();
       await requestAccessToken();
       await getProject();
 
-      setStatus("Klar. Velg en .kof-fil i Trimble Connect.");
+      setStatus("Klar. Skriv inn File ID og trykk Konverter KOF.");
       setOutput({
         ok: true,
         project: {
@@ -614,13 +705,23 @@ function isHeightKey(key) {
           name: state.project.name,
           location: state.project.location
         },
-        message: "Extension er klar. Velg eller åpne en .kof-fil i Trimble Connect."
+        message: "Extension er klar. Bruk inputfeltene for å konvertere KOF."
       });
 
       window.kof2txt = {
         state,
         processSelectedFile,
-        runCoreProbe
+        runCoreProbe,
+        useTestFile,
+        setFile(fileId, fileName) {
+          const file = {
+            id: String(fileId || "").trim(),
+            name: ensureKofFileName(fileName || "")
+          };
+          state.selectedFile = file;
+          setInputsFromFile(file);
+          return file;
+        }
       };
     } catch (err) {
       console.error(err);
@@ -630,12 +731,6 @@ function isHeightKey(key) {
         error: err?.message || String(err)
       });
     }
-  }
-
-  if (els.runBtn) {
-    els.runBtn.addEventListener("click", () => {
-      processSelectedFile();
-    });
   }
 
   window.addEventListener("load", init);

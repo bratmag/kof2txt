@@ -75,11 +75,13 @@ async function fetchText(url, token) {
   });
 
   const text = await res.text();
+  const contentType = res.headers.get("content-type") || "";
 
   return {
     status: res.status,
     ok: res.ok,
-    text
+    text,
+    contentType
   };
 }
 
@@ -156,6 +158,42 @@ function mapEntry(raw) {
 function isKofFile(entry) {
   const candidates = [entry?.name].filter(Boolean);
   return candidates.some((v) => String(v).toLowerCase().endsWith(".kof"));
+}
+
+function looksLikeFileMetadata(text, contentType) {
+  if (!text || !text.trim().startsWith("{")) {
+    return false;
+  }
+
+  if (contentType.toLowerCase().includes("application/json")) {
+    try {
+      const obj = JSON.parse(text);
+      return !!(
+        obj &&
+        typeof obj === "object" &&
+        obj.id &&
+        obj.name &&
+        obj.type &&
+        obj.versionId
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    const obj = JSON.parse(text);
+    return !!(
+      obj &&
+      typeof obj === "object" &&
+      obj.id &&
+      obj.name &&
+      obj.type &&
+      obj.versionId
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function validateAndFindProject(project, accessToken) {
@@ -255,10 +293,12 @@ async function listRootItems(projectId, rootId, accessToken) {
 
 async function downloadKofFile(fileId, accessToken) {
   const candidates = [
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}`,
-    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/content`,
     `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/download`,
-    `https://app.connect.trimble.com/tc/api/2.0/data/${fileId}`
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}/content`,
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}?download=true`,
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}?content=true`,
+    `https://app.connect.trimble.com/tc/api/2.0/data/${fileId}`,
+    `https://app.connect.trimble.com/tc/api/2.0/files/${fileId}`
   ];
 
   const diagnostics = [];
@@ -271,6 +311,7 @@ async function downloadKofFile(fileId, accessToken) {
         url,
         status: result.status,
         ok: result.ok,
+        contentType: result.contentType,
         preview: result.text.slice(0, 200)
       });
 
@@ -278,14 +319,21 @@ async function downloadKofFile(fileId, accessToken) {
         continue;
       }
 
-      if (result.text && result.text.trim().length > 0) {
-        return {
-          ok: true,
-          usedUrl: url,
-          text: result.text,
-          diagnostics
-        };
+      if (!result.text || !result.text.trim()) {
+        continue;
       }
+
+      if (looksLikeFileMetadata(result.text, result.contentType)) {
+        continue;
+      }
+
+      return {
+        ok: true,
+        usedUrl: url,
+        text: result.text,
+        contentType: result.contentType,
+        diagnostics
+      };
     } catch (err) {
       diagnostics.push({
         url,
@@ -463,6 +511,7 @@ async function downloadKofFile(fileId, accessToken) {
         size: firstKof.size
       },
       downloadUrl: download.usedUrl,
+      contentType: download.contentType,
       preview: download.text.slice(0, 2000),
       diagnostics: download.diagnostics
     });

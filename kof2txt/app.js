@@ -6,7 +6,6 @@
   const CONFIG = {
     DEBUG: true,
     AUTO_RUN: true,
-    ROOT_SEARCH_RECURSIVE: false,
     CONNECT_TIMEOUT_MS: 30000,
     TOKEN_WAIT_MS: 30000,
     FETCH_TIMEOUT_MS: 30000,
@@ -14,9 +13,6 @@
     PROXY_URL: "/.netlify/functions/tc-proxy"
   };
 
-  // =========================
-  // DOM helpers
-  // =========================
   const $status =
     document.getElementById("status") ||
     document.getElementById("statusText") ||
@@ -35,9 +31,6 @@
     document.getElementById("btnRun") ||
     null;
 
-  // =========================
-  // State
-  // =========================
   const state = {
     api: null,
     accessToken: null,
@@ -45,9 +38,6 @@
     project: null
   };
 
-  // =========================
-  // Logging / UI
-  // =========================
   function log(...args) { console.log(...args); }
   function debug(...args) { if (CONFIG.DEBUG) console.log(...args); }
 
@@ -77,10 +67,6 @@
     try { return JSON.parse(text); } catch { return null; }
   }
 
-  function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
   function withTimeout(promise, ms, label = "Operation") {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -92,35 +78,23 @@
     });
   }
 
-  // =========================
-  // Workspace API
-  // =========================
   async function connectWorkspace() {
     setStatus("Kobler til Trimble Connect...");
-
     if (!window.TrimbleConnectWorkspace?.connect) {
-      throw new Error(
-        "TrimbleConnectWorkspace ikke funnet. Sjekk at index.js fra Workspace API er lastet."
-      );
+      throw new Error("TrimbleConnectWorkspace ikke funnet.");
     }
-
     const api = await TrimbleConnectWorkspace.connect(
-      window.parent,
-      onWorkspaceEvent,
-      CONFIG.CONNECT_TIMEOUT_MS
+      window.parent, onWorkspaceEvent, CONFIG.CONNECT_TIMEOUT_MS
     );
-
     state.api = api;
     debug("API keys:", Object.keys(api || {}));
-
     if (api?.ui?.setMenu) {
       try {
         await api.ui.setMenu({ title: "KOF2TXT", icon: "", command: "kof2txt_main" });
       } catch (err) {
-        debug("setMenu ble ignorert:", err?.message || err);
+        debug("setMenu ignorert:", err?.message || err);
       }
     }
-
     return api;
   }
 
@@ -139,54 +113,40 @@
 
   async function requestAccessToken() {
     setStatus("Ber om access token...");
-
     if (!state.api?.extension?.requestPermission) {
-      throw new Error("extension.requestPermission finnes ikke på API-et.");
+      throw new Error("extension.requestPermission finnes ikke.");
     }
-
     const result = await state.api.extension.requestPermission("accesstoken");
-    debug("requestPermission result:", result);
-
+    debug("requestPermission result:", !!result);
     if (typeof result === "string" && result && result !== "pending" && result !== "denied") {
       state.accessToken = result;
       return result;
     }
-    if (result === "denied") {
-      throw new Error("Tilgang til access token ble avslått i Trimble Connect.");
-    }
+    if (result === "denied") throw new Error("Access token ble avslått.");
     if (result === "pending") {
-      const token = await withTimeout(
+      return withTimeout(
         new Promise((resolve) => { state.tokenWaiters.push(resolve); }),
-        CONFIG.TOKEN_WAIT_MS,
-        "Venter på extension.accessToken"
+        CONFIG.TOKEN_WAIT_MS, "Venter på token"
       );
-      return token;
     }
     if (state.accessToken) return state.accessToken;
-
-    throw new Error(`Uventet svar fra requestPermission: ${String(result)}`);
+    throw new Error(`Uventet svar: ${String(result)}`);
   }
 
   async function getProject() {
     setStatus("Henter prosjektinfo...");
-
     let project = null;
     if (state.api?.project?.getProject) {
       project = await state.api.project.getProject();
     } else if (state.api?.project?.getCurrentProject) {
       project = await state.api.project.getCurrentProject();
     }
-
     if (!project?.id) throw new Error("Fant ikke aktivt prosjekt.");
-
     state.project = project;
-    debug("Project:", project);
+    debug("Project (full):", JSON.stringify(project));
     return project;
   }
 
-  // =========================
-  // Region / base URL
-  // =========================
   function getCoreBaseUrl(projectLocation) {
     const loc = String(projectLocation || "").toLowerCase();
     if (loc === "europe") return "https://app.eu.connect.trimble.com/tc/api/2.0";
@@ -194,9 +154,6 @@
     return "https://app.connect.trimble.com/tc/api/2.0";
   }
 
-  // =========================
-  // Fetch helpers
-  // =========================
   async function fetchRaw(url, options = {}, timeoutMs = CONFIG.FETCH_TIMEOUT_MS) {
     const res = await withTimeout(fetch(url, options), timeoutMs, `Fetch ${url}`);
     const contentType = res.headers.get("content-type") || "";
@@ -205,36 +162,67 @@
     return { url, ok: res.ok, status: res.status, contentType, text, json };
   }
 
-  async function fetchJsonWithBearer(url, token, timeoutMs = CONFIG.FETCH_TIMEOUT_MS) {
-    return fetchRaw(url, { method: "GET", headers: { Authorization: `Bearer ${token}` } }, timeoutMs);
-  }
-
   async function postJson(url, body, timeoutMs = CONFIG.FETCH_TIMEOUT_MS) {
-    return fetchRaw(
-      url,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      },
-      timeoutMs
-    );
+    return fetchRaw(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }, timeoutMs);
   }
 
-  // =========================
-  // Proxy-wrapper (all Trimble API kall går via proxy for å unngå CORS)
-  // =========================
   async function proxyGet(token, url) {
-    return postJson(CONFIG.PROXY_URL, { action: "proxy", token, url, method: "GET" });
+    const r = await postJson(CONFIG.PROXY_URL, { action: "proxy", token, url, method: "GET" });
+    debug("PROXY SVAR:", url, "->", r.status, shortText(r.text, 400));
+    return r;
   }
 
-  // =========================
-  // File listing
-  // =========================
+  async function getRootFolderId(accessToken, project) {
+    const base = getCoreBaseUrl(project.location);
+    const candidates = [
+      `${base}/projects/${encodeURIComponent(project.id)}`,
+      `${base}/project/${encodeURIComponent(project.id)}`
+    ];
+    for (const url of candidates) {
+      const r = await proxyGet(accessToken, url);
+      if (r.ok && r.json) {
+        const rootId =
+          r.json.rootId ||
+          r.json.rootFolderId ||
+          r.json.root?.id ||
+          r.json.rootFolder?.id ||
+          null;
+        debug("getRootFolderId:", url, "-> rootId:", rootId, "json:", JSON.stringify(r.json).slice(0, 400));
+        if (rootId) return rootId;
+      }
+    }
+    return null;
+  }
+
   async function listRootFiles(accessToken, project) {
     setStatus("Lister filer i root...");
-
     const base = getCoreBaseUrl(project.location);
+    const diagnostics = [];
+
+    // Steg 1: folder-basert (Trimble Core API primær metode)
+    const rootId = await getRootFolderId(accessToken, project);
+    if (rootId) {
+      const folderUrl = `${base}/folders/${encodeURIComponent(rootId)}/items`;
+      try {
+        const r = await proxyGet(accessToken, folderUrl);
+        diagnostics.push({ url: folderUrl, ok: r.ok, status: r.status, preview: shortText(r.text, 300) });
+        if (r.ok) {
+          const items = extractArrayFromPayload(r.json);
+          if (items.length) {
+            debug("Fant", items.length, "filer via folder-endepunkt");
+            return { ok: true, url: folderUrl, files: items, diagnostics };
+          }
+        }
+      } catch (err) {
+        diagnostics.push({ url: folderUrl, ok: false, error: err?.message || String(err) });
+      }
+    }
+
+    // Steg 2: fallback
     const candidates = [
       `${base}/files?projectId=${encodeURIComponent(project.id)}&parentId=root`,
       `${base}/files?parentId=root&projectId=${encodeURIComponent(project.id)}`,
@@ -243,19 +231,13 @@
       `${base}/files?projectId=${encodeURIComponent(project.id)}`
     ];
 
-    const diagnostics = [];
-
     for (const url of candidates) {
       try {
         const r = await proxyGet(accessToken, url);
-        diagnostics.push({ url, ok: r.ok, status: r.status, preview: shortText(r.text, 250) });
-
+        diagnostics.push({ url, ok: r.ok, status: r.status, preview: shortText(r.text, 300) });
         if (!r.ok) continue;
-
         const items = extractArrayFromPayload(r.json);
-        if (Array.isArray(items) && items.length) {
-          return { ok: true, url, files: items, diagnostics };
-        }
+        if (items.length) return { ok: true, url, files: items, diagnostics };
       } catch (err) {
         diagnostics.push({ url, ok: false, error: err?.message || String(err) });
       }
@@ -282,54 +264,32 @@
     );
   }
 
-  // =========================
-  // Metadata
-  // =========================
   async function getFileMetadata(accessToken, project, fileId) {
     const base = getCoreBaseUrl(project.location);
     const url = `${base}/files/${encodeURIComponent(fileId)}`;
     const r = await proxyGet(accessToken, url);
-    return {
-      ok: r.ok,
-      status: r.status,
-      url,
-      contentType: r.contentType,
-      preview: shortText(r.text, 300),
-      data: r.json
-    };
+    return { ok: r.ok, status: r.status, url, contentType: r.contentType, preview: shortText(r.text, 300), data: r.json };
   }
 
-  // =========================
-  // Download via proxy
-  // =========================
   async function downloadKofFile(accessToken, project, fileId) {
-    // Hent metadata for å vise navn/versionId i output
     const meta = await getFileMetadata(accessToken, project, fileId);
-
     if (!meta.ok || !meta.data) {
       return { ok: false, step: "metadata", metadata: meta };
     }
-
     setStatus(`Laster ned ${meta.data.name || fileId} via proxy...`);
 
-    // Alt nedlastingsarbeid skjer i Netlify-funksjonen (ingen CORS)
     const proxyRes = await postJson(
       CONFIG.PROXY_URL,
-      {
-        action: "downloadKofFile",
-        token: accessToken,
-        fileId,
-        projectLocation: project.location
-      },
+      { action: "downloadKofFile", token: accessToken, fileId, projectLocation: project.location },
       CONFIG.PRESIGNED_FETCH_TIMEOUT_MS
     );
 
     const result = proxyRes.json;
+    debug("downloadKofFile proxy result:", JSON.stringify(result).slice(0, 600));
 
     if (!proxyRes.ok || !result?.ok) {
       return {
-        ok: false,
-        step: "downloadKof",
+        ok: false, step: "downloadKof",
         metadata: { id: meta.data?.id, versionId: meta.data?.versionId, name: meta.data?.name },
         proxyStatus: proxyRes.status,
         proxyResult: result
@@ -337,13 +297,8 @@
     }
 
     return {
-      ok: true,
-      step: "done",
-      file: {
-        id: meta.data?.id,
-        versionId: meta.data?.versionId,
-        name: meta.data?.name
-      },
+      ok: true, step: "done",
+      file: { id: meta.data?.id, versionId: meta.data?.versionId, name: meta.data?.name },
       source: result.source,
       contentType: null,
       text: result.content,
@@ -351,16 +306,8 @@
     };
   }
 
-  function safeHost(url) {
-    try { return new URL(url).host; } catch { return null; }
-  }
-
-  // =========================
-  // KOF -> TXT
-  // =========================
   function convertKofToTxt(kofText) {
-    // Placeholder: returner råtekst.
-    // Bytt ut med faktisk KOF-parser her når nedlastingen fungerer.
+    // Placeholder - bytt ut med KOF-parser
     return kofText;
   }
 
@@ -378,7 +325,6 @@
 
   function outputSuccess(result) {
     const txt = convertKofToTxt(result.text);
-
     setOutput({
       ok: true,
       project: { id: state.project?.id, location: state.project?.location, name: state.project?.name },
@@ -386,7 +332,6 @@
       source: result.source,
       preview: shortText(result.text, 1000)
     });
-
     const baseName = String(result.file?.name || "output.kof").replace(/\.kof$/i, "");
     downloadTextFile(`${baseName}.txt`, txt);
   }
@@ -395,9 +340,6 @@
     setOutput(errObj);
   }
 
-  // =========================
-  // Main
-  // =========================
   async function main() {
     try {
       setStatus("Starter...");
@@ -417,9 +359,7 @@
       const kofFile = findFirstKof(list.files);
       if (!kofFile) {
         throw {
-          ok: false,
-          step: "findKof",
-          project,
+          ok: false, step: "findKof", project,
           rootListUrl: list.url,
           rootFileCount: list.files.length,
           filesPreview: list.files.slice(0, 20).map((f) => ({
@@ -434,8 +374,7 @@
       if (!result.ok) {
         setStatus("Klarte ikke laste ned KOF-fil");
         outputError({
-          ok: false,
-          step: "downloadKof",
+          ok: false, step: "downloadKof",
           project: { id: project.id, location: project.location, name: project.name },
           file: { id: kofFile.id, name: kofFile.name, versionId: kofFile.versionId },
           download: result
@@ -447,21 +386,15 @@
       outputSuccess(result);
     } catch (err) {
       console.error(err);
-      const payload = err && typeof err === "object"
-        ? err
-        : { ok: false, error: String(err) };
+      const payload = err && typeof err === "object" ? err : { ok: false, error: String(err) };
       setStatus("Feil");
       outputError(payload);
     }
   }
 
-  // =========================
-  // Init
-  // =========================
   if ($runBtn) {
     $runBtn.addEventListener("click", () => { main(); });
   }
-
   if (CONFIG.AUTO_RUN) {
     window.addEventListener("load", () => { main(); });
   }

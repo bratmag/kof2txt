@@ -213,10 +213,227 @@
     };
   }
 
-  function convertKofToTxt(kofText) {
-    // Foreløpig råtekst.
-    // Sett inn faktisk KOF->TXT-logikk her når nedlasting fungerer stabilt.
-    return kofText;
+function convertKofToTxt(kofText) {
+  const points = parseKofPoints(kofText);
+
+  if (!points.length) {
+    return [
+      "Punktnavn,Nord,Øst,Høyde",
+      "# Fant ingen punkter i KOF-fila",
+      "# Første 1000 tegn fra fila:",
+      ...String(kofText || "").slice(0, 1000).split(/\r?\n/)
+    ].join("\n");
+  }
+
+  const lines = ["Punktnavn,Nord,Øst,Høyde"];
+
+  for (const p of points) {
+    lines.push([
+      csvEscape(p.name || ""),
+      formatNumberForTxt(p.north),
+      formatNumberForTxt(p.east),
+      formatNumberForTxt(p.height)
+    ].join(","));
+  }
+
+  return lines.join("\n");
+}
+
+function parseKofPoints(kofText) {
+  const text = String(kofText || "");
+  const lines = text.split(/\r?\n/);
+
+  const points = [];
+  let current = {};
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    // Ny blokk / nytt objekt
+    if (
+      /^OBJ/i.test(line) ||
+      /^PUNKT/i.test(line) ||
+      /^POINT/i.test(line) ||
+      /^BEGIN/i.test(line)
+    ) {
+      if (isCompletePoint(current)) {
+        points.push(normalizePoint(current));
+      }
+      current = {};
+      continue;
+    }
+
+    // Slutt på blokk
+    if (
+      /^END/i.test(line) ||
+      /^SLUTT/i.test(line)
+    ) {
+      if (isCompletePoint(current)) {
+        points.push(normalizePoint(current));
+      }
+      current = {};
+      continue;
+    }
+
+    // Nøkkel=verdi eller nøkkel: verdi
+    const kv = line.match(/^([^=:]+)\s*[:=]\s*(.+)$/);
+    if (kv) {
+      const key = normalizeKey(kv[1]);
+      const value = kv[2].trim();
+
+      if (!current.name && isNameKey(key)) current.name = cleanValue(value);
+      if (current.north == null && isNorthKey(key)) current.north = parseNumber(value);
+      if (current.east == null && isEastKey(key)) current.east = parseNumber(value);
+      if (current.height == null && isHeightKey(key)) current.height = parseNumber(value);
+
+      continue;
+    }
+
+    // Frie linjer: prøv å finne "navn + 3 tall"
+    // Eks: P1 6643210.123 245678.456 123.789
+    const free = tryParseFreePointLine(line);
+    if (free) {
+      if (isCompletePoint(current)) {
+        points.push(normalizePoint(current));
+      }
+      current = free;
+      continue;
+    }
+  }
+
+  if (isCompletePoint(current)) {
+    points.push(normalizePoint(current));
+  }
+
+  // Fjern duplikater på navn+nord+øst+høyde
+  return dedupePoints(points);
+}
+
+function tryParseFreePointLine(line) {
+  const m = line.match(
+    /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)$/
+  );
+
+  if (!m) return null;
+
+  return {
+    name: m[1],
+    north: parseNumber(m[2]),
+    east: parseNumber(m[3]),
+    height: parseNumber(m[4])
+  };
+}
+
+function isCompletePoint(p) {
+  return !!p && p.name && p.north != null && p.east != null;
+}
+
+function normalizePoint(p) {
+  return {
+    name: String(p.name || "").trim(),
+    north: p.north != null ? Number(p.north) : null,
+    east: p.east != null ? Number(p.east) : null,
+    height: p.height != null ? Number(p.height) : null
+  };
+}
+
+function dedupePoints(points) {
+  const seen = new Set();
+  const out = [];
+
+  for (const p of points) {
+    const key = `${p.name}|${p.north}|${p.east}|${p.height}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+
+  return out;
+}
+
+function normalizeKey(key) {
+  return String(key || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[æøå]/g, (c) => ({ "æ": "ae", "ø": "o", "å": "a" }[c]))
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function cleanValue(value) {
+  return String(value || "").trim().replace(/^"|"$/g, "");
+}
+
+function parseNumber(value) {
+  if (value == null) return null;
+
+  const s = String(value)
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(",", ".");
+
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatNumberForTxt(n) {
+  if (n == null || !Number.isFinite(n)) return "";
+  return String(n);
+}
+
+function csvEscape(value) {
+  const s = String(value ?? "");
+  if (/[",;\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function isNameKey(key) {
+  return [
+    "punktnavn",
+    "punktnummer",
+    "punktnr",
+    "punktid",
+    "punkt",
+    "navn",
+    "name",
+    "id",
+    "label"
+  ].includes(key);
+}
+
+function isNorthKey(key) {
+  return [
+    "n",
+    "nord",
+    "north",
+    "northing",
+    "y"
+  ].includes(key);
+}
+
+function isEastKey(key) {
+  return [
+    "e",
+    "ost",
+    "east",
+    "easting",
+    "x"
+  ].includes(key);
+}
+
+function isHeightKey(key) {
+  return [
+    "h",
+    "z",
+    "hoyde",
+    "height",
+    "elev",
+    "elevation",
+    "kote"
+  ].includes(key);
+}
   }
 
   async function processSelectedFile() {

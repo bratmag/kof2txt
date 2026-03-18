@@ -43,10 +43,10 @@ async function fetchAny(url, options = {}) {
   return { ok: response.ok, status: response.status, contentType, text, json: parsed };
 }
 
-async function handleDownloadKofFile(token, fileId, projectLocation) {
+async function handleDownloadKofFile(token, fileId, projectLocation, projectId) {
   const urls = getUrls(projectLocation);
   const auth = { Authorization: `Bearer ${token}` };
-  const diagnostics = { fileId, projectLocation, urls, steps: [] };
+  const diagnostics = { fileId, projectId, projectLocation, urls, steps: [] };
 
   // Steg 1: Metadata
   let versionId = fileId;
@@ -60,30 +60,34 @@ async function handleDownloadKofFile(token, fileId, projectLocation) {
   }
   diagnostics.versionId = versionId;
 
-  // Alle kandidater å prøve
+  // Kandidater — projects-api med prosjekt-kontekst
+  const pid = projectId || "";
   const candidates = [
-    // projects-api — sannsynlig aktiv nedlastings-API
-    { label: "projects-api/download",   url: `${urls.projects}/files/${fileId}/download`,           headers: { ...auth } },
-    { label: "projects-api/transfer",   url: `${urls.projects}/files/${fileId}/transfer`,           headers: { ...auth } },
-    { label: "projects-api/content",    url: `${urls.projects}/files/${fileId}/content`,            headers: { ...auth } },
-    { label: "projects-api/blob",       url: `${urls.projects}/files/${fileId}/blob`,               headers: { ...auth } },
-    { label: "projects-api/versions",   url: `${urls.projects}/files/${fileId}/versions/${versionId}/download`, headers: { ...auth } },
-    // WOPI
-    { label: "wopi/contents",           url: `${urls.wopi}/files/${fileId}/contents`,               headers: { ...auth } },
-    // Core med redirect
-    { label: "core-redirect",           url: `${urls.core}/files/${fileId}?download=true`,          headers: { ...auth, Accept: "*/*" }, redirect: "follow" },
+    // projects-api med prosjekt-ID i path
+    { label: "projects-api/proj/files/download",    url: `${urls.projects}/projects/${pid}/files/${fileId}/download` },
+    { label: "projects-api/proj/files/content",     url: `${urls.projects}/projects/${pid}/files/${fileId}/content` },
+    { label: "projects-api/proj/files/transfer",    url: `${urls.projects}/projects/${pid}/files/${fileId}/transfer` },
+    // projects-api med versjon
+    { label: "projects-api/proj/versions/download", url: `${urls.projects}/projects/${pid}/files/${fileId}/versions/${versionId}/download` },
+    // WOPI med prosjekt-kontekst
+    { label: "wopi/proj/files/contents",            url: `${urls.wopi}/projects/${pid}/files/${fileId}/contents` },
+    // Core: prøv GET uten Accept-header (noen ganger gir det binærinnhold)
+    { label: "core-no-accept",                      url: `${urls.core}/files/${fileId}`, noAccept: true },
+    // Core: HEAD for å se om det er redirect
+    { label: "core-head",                           url: `${urls.core}/files/${fileId}`, method: "HEAD" },
   ];
 
   for (const c of candidates) {
     try {
-      const fetchOptions = { method: "GET", headers: c.headers };
-      if (c.redirect) fetchOptions.redirect = c.redirect;
-      const res = await fetchAny(c.url, fetchOptions);
-      const isJson = res.contentType.includes("application/json");
+      const headers = c.noAccept ? { Authorization: `Bearer ${token}` } : { ...auth, Accept: "application/json" };
+      const method = c.method || "GET";
+      const res = await fetchAny(c.url, { method, headers, redirect: "follow" });
+      const isJson = res.contentType.includes("application/json") || res.contentType.includes("problem+json");
 
       diagnostics.steps.push({
         step: c.label,
         url: c.url,
+        method,
         status: res.status,
         ok: res.ok,
         contentType: res.contentType,
@@ -92,12 +96,13 @@ async function handleDownloadKofFile(token, fileId, projectLocation) {
 
       if (!res.ok) continue;
 
-      // Pre-signed URL i JSON-respons
-      const presignedUrl = res.json?.url || res.json?.downloadUrl || res.json?.href || res.json?.transferUrl || null;
+      // Pre-signed URL i JSON
+      const presignedUrl = res.json?.url || res.json?.downloadUrl || res.json?.href
+        || res.json?.transferUrl || res.json?.fileUrl || null;
       if (isJson && presignedUrl) {
-        diagnostics.steps.push({ step: "presigned-found", url: presignedUrl.slice(0, 80) });
+        diagnostics.steps.push({ step: "presigned-found", url: presignedUrl.slice(0, 100) });
         const fileRes = await fetchAny(presignedUrl, { method: "GET" });
-        diagnostics.steps.push({ step: "presigned-fetch", status: fileRes.status, ok: fileRes.ok, bytes: fileRes.text.length });
+        diagnostics.steps.push({ step: "presigned-fetch", status: fileRes.status, ok: fileRes.ok, bytes: fileRes.text.length, preview: fileRes.text.slice(0, 200) });
         if (fileRes.ok) {
           return json(200, { ok: true, fileId, versionId, source: c.label, via: "presigned", content: fileRes.text, diagnostics });
         }
@@ -126,12 +131,12 @@ exports.handler = async function (event) {
   try { data = JSON.parse(event.body || "{}"); }
   catch { return json(400, { ok: false, error: "Invalid JSON" }); }
 
-  const { action, token, url, method, fileId, projectLocation } = data;
+  const { action, token, url, method, fileId, projectLocation, projectId } = data;
   if (!token) return json(400, { ok: false, error: "Missing token" });
 
   if (action === "downloadKofFile") {
     if (!fileId) return json(400, { ok: false, error: "Missing fileId" });
-    return handleDownloadKofFile(token, fileId, projectLocation);
+    return handleDownloadKofFile(token, fileId, projectLocation, projectId);
   }
 
   if (!url) return json(400, { ok: false, error: "Missing url" });

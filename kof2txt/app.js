@@ -65,7 +65,81 @@ async function fetchJson(url, token) {
   };
 }
 
-async function validateAndListProjects(project, accessToken) {
+function isObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function flattenPossibleList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!isObject(payload)) return [];
+
+  const keysToTry = [
+    "items",
+    "files",
+    "folders",
+    "entries",
+    "children",
+    "documents",
+    "results",
+    "data"
+  ];
+
+  for (const key of keysToTry) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+
+  for (const key of keysToTry) {
+    if (isObject(payload[key])) {
+      for (const nestedKey of keysToTry) {
+        if (Array.isArray(payload[key][nestedKey])) {
+          return payload[key][nestedKey];
+        }
+      }
+    }
+  }
+
+  return [];
+}
+
+function mapEntry(raw) {
+  const name =
+    raw?.name ||
+    raw?.fileName ||
+    raw?.filename ||
+    raw?.title ||
+    raw?.displayName ||
+    null;
+
+  const path =
+    raw?.path ||
+    raw?.fullPath ||
+    raw?.location ||
+    raw?.parentPath ||
+    null;
+
+  const type =
+    raw?.type ||
+    raw?.entryType ||
+    raw?.kind ||
+    raw?.objectType ||
+    null;
+
+  return {
+    id: raw?.id || raw?.fileId || raw?.folderId || raw?.identifier || null,
+    name,
+    path,
+    type,
+    size: raw?.size ?? raw?.fileSize ?? null,
+    raw
+  };
+}
+
+function isKofFile(entry) {
+  const candidates = [entry?.name, entry?.path].filter(Boolean);
+  return candidates.some((v) => String(v).toLowerCase().endsWith(".kof"));
+}
+
+async function validateAndFindProject(project, accessToken) {
   const diagnostics = {
     currentProjectFromWorkspace: project,
     tokenValidation: null,
@@ -138,6 +212,86 @@ async function validateAndListProjects(project, accessToken) {
   };
 }
 
+function buildRootCandidates(projectId, rootId) {
+  const base = "https://app.connect.trimble.com/tc/api/2.0";
+
+  return [
+    `${base}/projects/${projectId}/folders/${rootId}/contents`,
+    `${base}/projects/${projectId}/folders/${rootId}/items`,
+    `${base}/projects/${projectId}/folders/${rootId}/children`,
+    `${base}/projects/${projectId}/folders/${rootId}`,
+    `${base}/folders/${rootId}/contents`,
+    `${base}/folders/${rootId}/items`,
+    `${base}/folders/${rootId}/children`,
+    `${base}/folders/${rootId}`,
+    `${base}/projects/${projectId}/root`,
+    `${base}/projects/${projectId}`
+  ];
+}
+
+async function listFromRoot(project, matchedProject, accessToken) {
+  const rootId = matchedProject?.rootId;
+
+  if (!rootId) {
+    return {
+      ok: false,
+      error: "Matched project mangler rootId"
+    };
+  }
+
+  const diagnostics = {
+    rootId,
+    tried: []
+  };
+
+  setStatus("Tester root-folder endepunkter...");
+
+  const urls = buildRootCandidates(project.id, rootId);
+
+  for (const url of urls) {
+    try {
+      const result = await fetchJson(url, accessToken);
+
+      diagnostics.tried.push({
+        url,
+        status: result.status,
+        ok: result.ok,
+        preview: result.json || result.text.slice(0, 400)
+      });
+
+      if (!result.ok) {
+        continue;
+      }
+
+      const list = flattenPossibleList(result.json);
+      const entries = list.map(mapEntry);
+      const kofFiles = entries.filter(isKofFile);
+
+      return {
+        ok: true,
+        usedUrl: url,
+        rootId,
+        entryCount: entries.length,
+        entries,
+        kofFiles,
+        diagnostics
+      };
+    } catch (err) {
+      diagnostics.tried.push({
+        url,
+        ok: false,
+        error: String(err?.message || err)
+      });
+    }
+  }
+
+  return {
+    ok: false,
+    error: "Fant ikke fungerende root-endepunkt ennå.",
+    diagnostics
+  };
+}
+
 (async function main() {
   try {
     setStatus("Kobler til Trimble Connect...");
@@ -172,14 +326,14 @@ async function validateAndListProjects(project, accessToken) {
       command: "kof2txt_main",
       subMenus: [
         {
-          title: "Test Core API",
-          command: "kof2txt_coretest"
+          title: "Finn KOF-filer",
+          command: "kof2txt_list"
         }
       ]
     });
 
     if (API.ui.setActiveMenuItem) {
-      await API.ui.setActiveMenuItem("kof2txt_coretest");
+      await API.ui.setActiveMenuItem("kof2txt_list");
     }
 
     if (API.extension?.setStatusMessage) {
@@ -201,25 +355,74 @@ async function validateAndListProjects(project, accessToken) {
 
     console.log("Access token mottatt:", true);
 
-    const result = await validateAndListProjects(project, accessToken);
+    const projectCheck = await validateAndFindProject(project, accessToken);
 
-    if (!result.ok) {
+    if (!projectCheck.ok) {
       setStatus("Core API-test feilet");
       setOutput({
         ok: false,
         step: "coreApiTest",
-        result
+        result: projectCheck
       });
       return;
     }
 
-    setStatus("Core API-test OK");
+    if (!projectCheck.matchedProject) {
+      setStatus("Fant ikke prosjektet i Core API");
+      setOutput({
+        ok: false,
+        step: "coreApiMatch",
+        result: projectCheck
+      });
+      return;
+    }
+
+    const rootTest = await listFromRoot(
+      project,
+      projectCheck.matchedProject,
+      accessToken
+    );
+
+    if (!rootTest.ok) {
+      setStatus("Fant ikke fungerende root-endepunkt");
+      setOutput({
+        ok: false,
+        step: "rootEndpointTest",
+        matchedProject: projectCheck.matchedProject,
+        result: rootTest,
+        diagnostics: projectCheck.diagnostics
+      });
+      return;
+    }
+
+    setStatus(
+      rootTest.kofFiles.length > 0
+        ? `Fant ${rootTest.kofFiles.length} .kof-fil(er)`
+        : `Root-endepunkt virker, men fant ingen .kof-filer`
+    );
+
     setOutput({
       ok: true,
-      step: "coreApiTest",
-      projectsCount: result.projectsCount,
-      matchedProject: result.matchedProject,
-      diagnostics: result.diagnostics
+      step: "rootEndpointTest",
+      matchedProject: projectCheck.matchedProject,
+      usedUrl: rootTest.usedUrl,
+      rootId: rootTest.rootId,
+      entryCount: rootTest.entryCount,
+      kofFiles: rootTest.kofFiles.map((f) => ({
+        id: f.id,
+        name: f.name,
+        path: f.path,
+        type: f.type,
+        size: f.size
+      })),
+      sampleEntries: rootTest.entries.slice(0, 20).map((f) => ({
+        id: f.id,
+        name: f.name,
+        path: f.path,
+        type: f.type,
+        size: f.size
+      })),
+      diagnostics: rootTest.diagnostics
     });
   } catch (err) {
     console.error("Fatal error:", err);

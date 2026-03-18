@@ -280,7 +280,7 @@
 
     const proxyRes = await postJson(
       CONFIG.PROXY_URL,
-      { action: "downloadKofFile", token: accessToken, fileId, projectLocation: project.location },
+      { action: "downloadKofFile", token: accessToken, fileId, projectLocation: project.location, projectId: project.id },
       CONFIG.PRESIGNED_FETCH_TIMEOUT_MS
     );
 

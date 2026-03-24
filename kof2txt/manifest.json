@@ -1,6 +1,19 @@
 {
-  "title": "KOF DEBUG",
-  "url": "https://kof2txt.netlify.app/index.html",
-  "description": "Debug extension for Trimble Connect",
-  "enabled": true
+  "name": "KOF2TXT",
+  "version": "1.0",
+  "manifestVersion": 1,
+  "author": "Magnus",
+
+  "extensions": [
+    {
+      "type": "ui",
+      "name": "KOF2TXT",
+      "description": "Convert KOF to TXT",
+
+      "url": "https://kof2txt.netlify.app/index.html",
+      "icon": "https://kof2txt.netlify.app/icon.png",
+
+      "context": ["files"]
+    }
+  ]
 }

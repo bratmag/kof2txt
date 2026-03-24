@@ -80,12 +80,14 @@
   function triggerDownload(filename, text) {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
+
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
+
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
@@ -115,148 +117,104 @@
   }
 
   function buildUi() {
-    document.body.innerHTML = "";
+    const app = document.getElementById("app");
+    if (!app) {
+      throw new Error("Fant ikke #app i index.html");
+    }
+
+    app.innerHTML = "";
 
     const root = document.createElement("div");
-    root.style.fontFamily = "Arial, sans-serif";
-    root.style.fontSize = "14px";
-    root.style.padding = "12px";
-    root.style.color = "#222";
+
+    const titleCard = document.createElement("div");
+    titleCard.className = "card";
 
     const title = document.createElement("h2");
     title.textContent = "KOF2TXT";
-    title.style.margin = "0 0 10px 0";
+    title.style.margin = "0 0 8px 0";
 
-    const info = document.createElement("div");
-    info.style.marginBottom = "12px";
-    info.style.lineHeight = "1.4";
-    info.textContent =
-      "Lim inn File ID og filnavn manuelt, og trykk Konverter KOF.";
+    const intro = document.createElement("div");
+    intro.className = "muted";
+    intro.textContent = "Skriv inn File ID manuelt og trykk Konverter KOF.";
 
-    const projectBox = document.createElement("div");
-    projectBox.style.padding = "8px";
-    projectBox.style.marginBottom = "12px";
-    projectBox.style.background = "#f5f5f5";
-    projectBox.style.border = "1px solid #ddd";
-    projectBox.style.borderRadius = "6px";
+    titleCard.appendChild(title);
+    titleCard.appendChild(intro);
+
+    const projectCard = document.createElement("div");
+    projectCard.className = "card";
 
     const projectLabel = document.createElement("div");
-    projectLabel.textContent = "Prosjekt:";
     projectLabel.style.fontWeight = "bold";
+    projectLabel.style.marginBottom = "4px";
+    projectLabel.textContent = "Prosjekt";
 
     const projectValue = document.createElement("div");
     projectValue.textContent = "-";
 
-    projectBox.appendChild(projectLabel);
-    projectBox.appendChild(projectValue);
+    projectCard.appendChild(projectLabel);
+    projectCard.appendChild(projectValue);
+
+    const formCard = document.createElement("div");
+    formCard.className = "card";
 
     const form = document.createElement("div");
-    form.style.display = "grid";
-    form.style.gridTemplateColumns = "1fr";
-    form.style.gap = "10px";
-    form.style.marginBottom = "12px";
+    form.className = "row";
 
     const fileIdWrap = document.createElement("div");
     const fileIdLabel = document.createElement("label");
     fileIdLabel.textContent = "File ID";
-    fileIdLabel.style.display = "block";
-    fileIdLabel.style.fontWeight = "bold";
-    fileIdLabel.style.marginBottom = "4px";
-
     const fileIdInput = document.createElement("input");
     fileIdInput.type = "text";
     fileIdInput.placeholder = "F.eks. RZPc08vH2VU";
-    fileIdInput.style.width = "100%";
-    fileIdInput.style.boxSizing = "border-box";
-    fileIdInput.style.padding = "8px";
-
     fileIdWrap.appendChild(fileIdLabel);
     fileIdWrap.appendChild(fileIdInput);
 
     const fileNameWrap = document.createElement("div");
     const fileNameLabel = document.createElement("label");
     fileNameLabel.textContent = "Filnavn";
-    fileNameLabel.style.display = "block";
-    fileNameLabel.style.fontWeight = "bold";
-    fileNameLabel.style.marginBottom = "4px";
-
     const fileNameInput = document.createElement("input");
     fileNameInput.type = "text";
     fileNameInput.placeholder = "F.eks. Eiendomspunkter kof.kof";
-    fileNameInput.style.width = "100%";
-    fileNameInput.style.boxSizing = "border-box";
-    fileNameInput.style.padding = "8px";
-
     fileNameWrap.appendChild(fileNameLabel);
     fileNameWrap.appendChild(fileNameInput);
 
     form.appendChild(fileIdWrap);
     form.appendChild(fileNameWrap);
 
-    const buttons = document.createElement("div");
-    buttons.style.display = "flex";
-    buttons.style.flexWrap = "wrap";
-    buttons.style.gap = "8px";
-    buttons.style.marginBottom = "12px";
+    const btnRow = document.createElement("div");
+    btnRow.className = "btn-row";
 
     const convertBtn = document.createElement("button");
     convertBtn.textContent = "Konverter KOF";
-    convertBtn.style.padding = "10px 14px";
-    convertBtn.style.cursor = "pointer";
 
     const testBtn = document.createElement("button");
     testBtn.textContent = "Bruk testfil";
-    testBtn.style.padding = "10px 14px";
-    testBtn.style.cursor = "pointer";
 
     const probeBtn = document.createElement("button");
     probeBtn.textContent = "Core probe";
-    probeBtn.style.padding = "10px 14px";
-    probeBtn.style.cursor = "pointer";
 
-    buttons.appendChild(convertBtn);
-    buttons.appendChild(testBtn);
-    buttons.appendChild(probeBtn);
+    btnRow.appendChild(convertBtn);
+    btnRow.appendChild(testBtn);
+    btnRow.appendChild(probeBtn);
+
+    formCard.appendChild(form);
+    formCard.appendChild(btnRow);
 
     const statusBox = document.createElement("div");
-    statusBox.style.padding = "8px";
-    statusBox.style.background = "#eef5ff";
-    statusBox.style.border = "1px solid #cddff7";
-    statusBox.style.borderRadius = "6px";
-    statusBox.style.marginBottom = "12px";
+    statusBox.id = "statusBox";
     statusBox.textContent = "Starter...";
 
-    const help = document.createElement("div");
-    help.style.fontSize = "12px";
-    help.style.color = "#555";
-    help.style.lineHeight = "1.5";
-    help.style.marginBottom = "12px";
-    help.innerHTML =
-      "Tips: Du kan bruke testfila direkte, eller lime inn File ID manuelt. " +
-      "Filnavn brukes til navn på nedlastet .txt-fil.";
-
     const output = document.createElement("pre");
-    output.style.whiteSpace = "pre-wrap";
-    output.style.wordBreak = "break-word";
-    output.style.background = "#111";
-    output.style.color = "#eaeaea";
-    output.style.padding = "10px";
-    output.style.borderRadius = "6px";
-    output.style.minHeight = "180px";
-    output.style.maxHeight = "420px";
-    output.style.overflow = "auto";
+    output.id = "output";
     output.textContent = "";
 
-    root.appendChild(title);
-    root.appendChild(info);
-    root.appendChild(projectBox);
-    root.appendChild(form);
-    root.appendChild(buttons);
+    root.appendChild(titleCard);
+    root.appendChild(projectCard);
+    root.appendChild(formCard);
     root.appendChild(statusBox);
-    root.appendChild(help);
     root.appendChild(output);
 
-    document.body.appendChild(root);
+    app.appendChild(root);
 
     ui = {
       root,
@@ -276,7 +234,7 @@
 
     if (!window.TrimbleConnectWorkspace?.connect) {
       throw new Error(
-        "TrimbleConnectWorkspace ikke funnet. Sjekk at Workspace API-scriptet er lastet i index.html."
+        "TrimbleConnectWorkspace ikke funnet. Sjekk at Workspace API-scriptet er lastet."
       );
     }
 

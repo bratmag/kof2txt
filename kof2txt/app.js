@@ -458,13 +458,15 @@
     return dedupePoints(points);
   }
 
-  function tryParseFreePointLine(line) {
-    const m = line.match(
-      /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)$/
-    );
+function tryParseFreePointLine(line) {
+  const s = String(line || "").trim();
 
-    if (!m) return null;
+  // KOF-linjer: 05 <punktid> <nord> <øst> <høyde>
+  let m = s.match(
+    /^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/
+  );
 
+  if (m) {
     return {
       name: m[1],
       north: parseNumber(m[2]),
@@ -472,6 +474,23 @@
       height: parseNumber(m[4])
     };
   }
+
+  // fallback: generisk 4-felts linje
+  m = s.match(
+    /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/
+  );
+
+  if (m) {
+    return {
+      name: m[1],
+      north: parseNumber(m[2]),
+      east: parseNumber(m[3]),
+      height: parseNumber(m[4])
+    };
+  }
+
+  return null;
+}
 
   function isCompletePoint(p) {
     return !!p && p.name && p.north != null && p.east != null;

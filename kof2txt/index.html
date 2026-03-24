@@ -4,65 +4,104 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>KOF DEBUG</title>
+
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+
   <style>
-    body { font-family: Arial, sans-serif; margin: 10px; font-size: 13px; }
-    #status { font-weight: bold; margin-bottom: 8px; }
-    #output { background: #f5f5f5; padding: 10px; border-radius: 6px; white-space: pre-wrap; font-size: 11px; max-height: 300px; overflow-y: auto; }
-    #diagnostics-panel { margin-top: 10px; }
-    #diagnostics-panel h3 { margin: 0 0 6px 0; font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; font-size: 11px; }
-    th { background: #333; color: white; padding: 4px 6px; text-align: left; }
-    td { padding: 4px 6px; border-bottom: 1px solid #ddd; vertical-align: top; }
-    tr.ok td { background: #e6ffe6; }
-    tr.fail td { background: #ffe6e6; }
-    .preview { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-family: monospace; }
-    .preview:hover { white-space: pre-wrap; max-width: none; }
-    #copy-btn { margin-top: 8px; padding: 4px 10px; cursor: pointer; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      background: #ffffff;
+      color: #222;
+    }
+
+    #app {
+      padding: 12px;
+      box-sizing: border-box;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .muted {
+      color: #666;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      padding: 10px 14px;
+      border: 1px solid #999;
+      border-radius: 6px;
+      background: #f5f5f5;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    button:hover {
+      background: #ececec;
+    }
+
+    #statusBox {
+      background: #eef5ff;
+      border: 1px solid #cddff7;
+      border-radius: 6px;
+      padding: 8px;
+      margin-bottom: 12px;
+      font-weight: bold;
+    }
+
+    #output {
+      background: #111;
+      color: #eaeaea;
+      padding: 10px;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 180px;
+      max-height: 420px;
+      overflow: auto;
+      font-size: 11px;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
-  <h2>KOF DEBUG</h2>
-  <div id="status">Starter...</div>
-  <pre id="output"></pre>
-
-  <div id="diagnostics-panel" style="display:none">
-    <h3>Diagnostics</h3>
-    <table id="diag-table">
-      <thead><tr><th>Steg</th><th>URL</th><th>Status</th><th>Accept</th><th>ContentType</th><th>Preview</th></tr></thead>
-      <tbody id="diag-body"></tbody>
-    </table>
-    <button id="copy-btn">Kopier full diagnostics (JSON)</button>
-  </div>
-
+  <div id="app"></div>
   <script src="app.js"></script>
-  <script>
-    // Globalt tilgjengelig for app.js å kalle
-    window.showDiagnostics = function(steps) {
-      const panel = document.getElementById("diagnostics-panel");
-      const tbody = document.getElementById("diag-body");
-      panel.style.display = "block";
-      tbody.innerHTML = "";
-      (steps || []).forEach(s => {
-        const tr = document.createElement("tr");
-        tr.className = s.ok ? "ok" : "fail";
-        tr.innerHTML = `
-          <td>${s.step || ""}</td>
-          <td style="font-family:monospace;font-size:10px">${(s.url || "").replace("https://","")}</td>
-          <td>${s.status || s.error || ""}</td>
-          <td>${s.acceptHeader || ""}</td>
-          <td>${s.contentType || ""}</td>
-          <td class="preview" title="${(s.preview||"").replace(/"/g,"&quot;")}">${s.preview || s.error || ""}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-    };
-
-    window._lastDiagnostics = null;
-    document.getElementById("copy-btn").addEventListener("click", () => {
-      const txt = JSON.stringify(window._lastDiagnostics, null, 2);
-      navigator.clipboard.writeText(txt).then(() => alert("Kopiert!"));
-    });
-  </script>
 </body>
 </html>

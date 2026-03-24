@@ -7,10 +7,7 @@
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     DEFAULT_TEST_FILE_ID: "RZPc08vH2VU",
-    DEFAULT_TEST_FILE_NAME: "Eiendomspunkter kof.kof",
-    MENU_TOP: "KOF2TXT_TOP",
-    MENU_CONVERT: "KOF2TXT_CONVERT",
-    ICON_URL: "https://kof2txt.netlify.app/icon.png"
+    DEFAULT_TEST_FILE_NAME: "Eiendomspunkter kof.kof"
   };
 
   const state = {
@@ -19,9 +16,8 @@
     project: null,
     selectedFile: null,
     lastResult: null,
-    isEmbedded: false,
     tokenWaiters: [],
-    menuReady: false
+    isEmbedded: false
   };
 
   let ui = {};
@@ -36,10 +32,7 @@
 
   function setStatus(message) {
     log(`[STATUS] ${message}`);
-
-    if (ui.status) {
-      ui.status.textContent = message;
-    }
+    if (ui.status) ui.status.textContent = message;
 
     if (state.api?.extension?.setStatusMessage) {
       state.api.extension.setStatusMessage(message).catch(() => {});
@@ -118,6 +111,7 @@
   function fileFromInputs() {
     const id = String(ui.fileIdInput?.value || "").trim();
     const name = ensureKofFileName(ui.fileNameInput?.value || "");
+
     if (!id) return null;
     return { id, name };
   }
@@ -139,9 +133,7 @@
   }
 
   function waitForToken(ms = CONFIG.TOKEN_WAIT_MS) {
-    if (state.accessToken) {
-      return Promise.resolve(state.accessToken);
-    }
+    if (state.accessToken) return Promise.resolve(state.accessToken);
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -271,37 +263,6 @@
     };
   }
 
-  async function setupMenu(api) {
-    if (!api?.ui?.setMenu) {
-      debug("api.ui.setMenu finnes ikke.");
-      return;
-    }
-
-    try {
-      await api.ui.setMenu({
-        title: "KOF2TXT",
-        icon: CONFIG.ICON_URL,
-        command: CONFIG.MENU_TOP,
-        subMenus: [
-          {
-            title: "Konverter KOF",
-            icon: CONFIG.ICON_URL,
-            command: CONFIG.MENU_CONVERT
-          }
-        ]
-      });
-
-      if (api.ui.setActiveMenuItem) {
-        await api.ui.setActiveMenuItem(CONFIG.MENU_CONVERT);
-      }
-
-      state.menuReady = true;
-      debug("Meny satt.");
-    } catch (err) {
-      debug("Klarte ikke sette meny:", err?.message || err);
-    }
-  }
-
   async function connectWorkspace() {
     setStatus("Kobler til Trimble Connect...");
 
@@ -319,17 +280,13 @@
 
     state.api = api;
     state.isEmbedded = window.parent && window.parent !== window;
-
     debug("API keys:", Object.keys(api || {}));
-    await setupMenu(api);
 
     return api;
   }
 
   async function requestAccessToken() {
-    if (state.accessToken) {
-      return state.accessToken;
-    }
+    if (state.accessToken) return state.accessToken;
 
     setStatus("Ber om access token...");
 
@@ -352,7 +309,7 @@
     }
 
     if (result === "pending" || !result) {
-      debug("Access token pending, venter på extension.accessToken-event...");
+      debug("Token er pending. Venter på extension.accessToken-event...");
       const token = await waitForToken(CONFIG.TOKEN_WAIT_MS);
       state.accessToken = token;
       return token;
@@ -362,6 +319,8 @@
   }
 
   async function getProject() {
+    if (state.project) return state.project;
+
     setStatus("Henter prosjektinfo...");
 
     if (!state.api?.project?.getProject) {
@@ -383,6 +342,20 @@
     }
 
     return project;
+  }
+
+  async function ensureReady() {
+    if (!state.api) {
+      throw new Error("Ikke koblet til Workspace API.");
+    }
+
+    if (!state.accessToken) {
+      await requestAccessToken();
+    }
+
+    if (!state.project) {
+      await getProject();
+    }
   }
 
   async function callProxy(action, payload) {
@@ -580,20 +553,6 @@
     return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key);
   }
 
-  async function ensureReady() {
-    if (!state.api) {
-      throw new Error("Ikke koblet til Workspace API.");
-    }
-
-    if (!state.accessToken) {
-      await requestAccessToken();
-    }
-
-    if (!state.project) {
-      await getProject();
-    }
-  }
-
   async function processSelectedFile() {
     try {
       await ensureReady();
@@ -720,29 +679,8 @@
     });
   }
 
-  function activateConvertMenuUi() {
-    setStatus("KOF2TXT åpnet");
-
-    if (state.api?.ui?.setActiveMenuItem) {
-      state.api.ui.setActiveMenuItem(CONFIG.MENU_CONVERT).catch(() => {});
-    }
-
-    if (state.api?.extension?.requestFocus) {
-      state.api.extension.requestFocus().catch(() => {});
-    }
-  }
-
   function onWorkspaceEvent(event, args) {
     debug("[TC EVENT]", event, args);
-
-    if (event === "extension.command") {
-      const cmd = args?.data;
-
-      if (cmd === CONFIG.MENU_TOP || cmd === CONFIG.MENU_CONVERT) {
-        activateConvertMenuUi();
-      }
-      return;
-    }
 
     if (event === "extension.accessToken") {
       const token = args?.data;
@@ -777,35 +715,11 @@
       setStatus("Starter...");
       await connectWorkspace();
 
-      if (state.isEmbedded) {
-        try {
-          await requestAccessToken();
-        } catch (err) {
-          debug("Token ved oppstart feilet:", err?.message || err);
-        }
-
-        try {
-          await getProject();
-        } catch (err) {
-          debug("Prosjekt ved oppstart feilet:", err?.message || err);
-        }
-      } else {
-        debug("Kjører utenfor Trimble Connect iframe.");
-      }
-
       setStatus("Klar. Skriv inn File ID og trykk Konverter KOF.");
       setOutput({
         ok: true,
         embedded: state.isEmbedded,
-        menuReady: state.menuReady,
-        project: state.project
-          ? {
-              id: state.project.id,
-              name: state.project.name,
-              location: state.project.location
-            }
-          : null,
-        message: "Extension er klar. Bruk inputfeltene for å konvertere KOF."
+        message: "Extension lastet. Token og prosjekt hentes først når du kjører en handling."
       });
 
       window.kof2txt = {
@@ -819,6 +733,13 @@
           state.project = null;
           await connectWorkspace();
           return true;
+        },
+        async prime() {
+          await ensureReady();
+          return {
+            accessToken: !!state.accessToken,
+            project: state.project
+          };
         },
         setFile(fileId, fileName) {
           const file = {

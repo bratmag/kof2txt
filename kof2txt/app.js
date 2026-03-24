@@ -4,9 +4,13 @@
   const CONFIG = {
     DEBUG: true,
     CONNECT_TIMEOUT_MS: 30000,
+    TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
     DEFAULT_TEST_FILE_ID: "RZPc08vH2VU",
-    DEFAULT_TEST_FILE_NAME: "Eiendomspunkter kof.kof"
+    DEFAULT_TEST_FILE_NAME: "Eiendomspunkter kof.kof",
+    MENU_TOP: "KOF2TXT_TOP",
+    MENU_CONVERT: "KOF2TXT_CONVERT",
+    ICON_URL: "https://kof2txt.netlify.app/icon.png"
   };
 
   const state = {
@@ -14,7 +18,10 @@
     accessToken: null,
     project: null,
     selectedFile: null,
-    lastResult: null
+    lastResult: null,
+    isEmbedded: false,
+    tokenWaiters: [],
+    menuReady: false
   };
 
   let ui = {};
@@ -29,7 +36,10 @@
 
   function setStatus(message) {
     log(`[STATUS] ${message}`);
-    if (ui.status) ui.status.textContent = message;
+
+    if (ui.status) {
+      ui.status.textContent = message;
+    }
 
     if (state.api?.extension?.setStatusMessage) {
       state.api.extension.setStatusMessage(message).catch(() => {});
@@ -77,6 +87,10 @@
     });
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function triggerDownload(filename, text) {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -104,9 +118,7 @@
   function fileFromInputs() {
     const id = String(ui.fileIdInput?.value || "").trim();
     const name = ensureKofFileName(ui.fileNameInput?.value || "");
-
     if (!id) return null;
-
     return { id, name };
   }
 
@@ -114,6 +126,36 @@
     if (!file) return;
     if (ui.fileIdInput) ui.fileIdInput.value = file.id || "";
     if (ui.fileNameInput) ui.fileNameInput.value = file.name || "";
+  }
+
+  function resolveTokenWaiters(token) {
+    const waiters = [...state.tokenWaiters];
+    state.tokenWaiters = [];
+    for (const resolve of waiters) {
+      try {
+        resolve(token);
+      } catch {}
+    }
+  }
+
+  function waitForToken(ms = CONFIG.TOKEN_WAIT_MS) {
+    if (state.accessToken) {
+      return Promise.resolve(state.accessToken);
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        state.tokenWaiters = state.tokenWaiters.filter((fn) => fn !== wrappedResolve);
+        reject(new Error(`Ventet for lenge på access token (${ms} ms)`));
+      }, ms);
+
+      function wrappedResolve(token) {
+        clearTimeout(timer);
+        resolve(token);
+      }
+
+      state.tokenWaiters.push(wrappedResolve);
+    });
   }
 
   function buildUi() {
@@ -229,6 +271,37 @@
     };
   }
 
+  async function setupMenu(api) {
+    if (!api?.ui?.setMenu) {
+      debug("api.ui.setMenu finnes ikke.");
+      return;
+    }
+
+    try {
+      await api.ui.setMenu({
+        title: "KOF2TXT",
+        icon: CONFIG.ICON_URL,
+        command: CONFIG.MENU_TOP,
+        subMenus: [
+          {
+            title: "Konverter KOF",
+            icon: CONFIG.ICON_URL,
+            command: CONFIG.MENU_CONVERT
+          }
+        ]
+      });
+
+      if (api.ui.setActiveMenuItem) {
+        await api.ui.setActiveMenuItem(CONFIG.MENU_CONVERT);
+      }
+
+      state.menuReady = true;
+      debug("Meny satt.");
+    } catch (err) {
+      debug("Klarte ikke sette meny:", err?.message || err);
+    }
+  }
+
   async function connectWorkspace() {
     setStatus("Kobler til Trimble Connect...");
 
@@ -245,39 +318,47 @@
     );
 
     state.api = api;
-    debug("API keys:", Object.keys(api || {}));
+    state.isEmbedded = window.parent && window.parent !== window;
 
-    if (api?.ui?.setMenu) {
-      try {
-        await api.ui.setMenu({
-          title: "KOF2TXT",
-          icon: "",
-          command: "kof2txt"
-        });
-      } catch (err) {
-        debug("setMenu ignorert:", err?.message || err);
-      }
-    }
+    debug("API keys:", Object.keys(api || {}));
+    await setupMenu(api);
 
     return api;
   }
 
   async function requestAccessToken() {
+    if (state.accessToken) {
+      return state.accessToken;
+    }
+
     setStatus("Ber om access token...");
 
     if (!state.api?.extension?.requestPermission) {
       throw new Error("extension.requestPermission finnes ikke.");
     }
 
-    const token = await state.api.extension.requestPermission("accesstoken");
+    const result = await state.api.extension.requestPermission("accesstoken");
+    debug("requestPermission svar:", result);
 
-    if (!token || typeof token !== "string" || token === "pending" || token === "denied") {
-      throw new Error(`Fikk ikke gyldig access token. Svar: ${String(token)}`);
+    if (typeof result === "string" && result && result !== "pending" && result !== "denied") {
+      state.accessToken = result;
+      resolveTokenWaiters(result);
+      debug("Access token mottatt direkte.");
+      return result;
     }
 
-    state.accessToken = token;
-    debug("Access token mottatt:", true);
-    return token;
+    if (result === "denied") {
+      throw new Error("Tilgang til access token ble avslått.");
+    }
+
+    if (result === "pending" || !result) {
+      debug("Access token pending, venter på extension.accessToken-event...");
+      const token = await waitForToken(CONFIG.TOKEN_WAIT_MS);
+      state.accessToken = token;
+      return token;
+    }
+
+    throw new Error(`Uventet svar fra requestPermission: ${String(result)}`);
   }
 
   async function getProject() {
@@ -297,7 +378,8 @@
     debug("Project:", project);
 
     if (ui.projectValue) {
-      ui.projectValue.textContent = `${project.name || "-"} (${project.id}) | region: ${project.location || "-"}`;
+      ui.projectValue.textContent =
+        `${project.name || "-"} (${project.id}) | region: ${project.location || "-"}`;
     }
 
     return project;
@@ -498,11 +580,23 @@
     return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key);
   }
 
+  async function ensureReady() {
+    if (!state.api) {
+      throw new Error("Ikke koblet til Workspace API.");
+    }
+
+    if (!state.accessToken) {
+      await requestAccessToken();
+    }
+
+    if (!state.project) {
+      await getProject();
+    }
+  }
+
   async function processSelectedFile() {
     try {
-      if (!state.api) throw new Error("Ikke koblet til Workspace API.");
-      if (!state.accessToken) await requestAccessToken();
-      if (!state.project) await getProject();
+      await ensureReady();
 
       const file = fileFromInputs();
       if (!file) {
@@ -573,8 +667,7 @@
 
   async function runCoreProbe() {
     try {
-      if (!state.accessToken) await requestAccessToken();
-      if (!state.project) await getProject();
+      await ensureReady();
 
       const file = fileFromInputs();
       if (!file?.id) {
@@ -627,8 +720,39 @@
     });
   }
 
+  function activateConvertMenuUi() {
+    setStatus("KOF2TXT åpnet");
+
+    if (state.api?.ui?.setActiveMenuItem) {
+      state.api.ui.setActiveMenuItem(CONFIG.MENU_CONVERT).catch(() => {});
+    }
+
+    if (state.api?.extension?.requestFocus) {
+      state.api.extension.requestFocus().catch(() => {});
+    }
+  }
+
   function onWorkspaceEvent(event, args) {
     debug("[TC EVENT]", event, args);
+
+    if (event === "extension.command") {
+      const cmd = args?.data;
+
+      if (cmd === CONFIG.MENU_TOP || cmd === CONFIG.MENU_CONVERT) {
+        activateConvertMenuUi();
+      }
+      return;
+    }
+
+    if (event === "extension.accessToken") {
+      const token = args?.data;
+      if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
+        state.accessToken = token;
+        resolveTokenWaiters(token);
+        debug("Access token mottatt via event.");
+      }
+      return;
+    }
   }
 
   function wireUi() {
@@ -652,17 +776,35 @@
 
       setStatus("Starter...");
       await connectWorkspace();
-      await requestAccessToken();
-      await getProject();
+
+      if (state.isEmbedded) {
+        try {
+          await requestAccessToken();
+        } catch (err) {
+          debug("Token ved oppstart feilet:", err?.message || err);
+        }
+
+        try {
+          await getProject();
+        } catch (err) {
+          debug("Prosjekt ved oppstart feilet:", err?.message || err);
+        }
+      } else {
+        debug("Kjører utenfor Trimble Connect iframe.");
+      }
 
       setStatus("Klar. Skriv inn File ID og trykk Konverter KOF.");
       setOutput({
         ok: true,
-        project: {
-          id: state.project.id,
-          name: state.project.name,
-          location: state.project.location
-        },
+        embedded: state.isEmbedded,
+        menuReady: state.menuReady,
+        project: state.project
+          ? {
+              id: state.project.id,
+              name: state.project.name,
+              location: state.project.location
+            }
+          : null,
         message: "Extension er klar. Bruk inputfeltene for å konvertere KOF."
       });
 
@@ -671,6 +813,13 @@
         processSelectedFile,
         runCoreProbe,
         useTestFile,
+        async reconnect() {
+          state.api = null;
+          state.accessToken = null;
+          state.project = null;
+          await connectWorkspace();
+          return true;
+        },
         setFile(fileId, fileName) {
           const file = {
             id: String(fileId || "").trim(),

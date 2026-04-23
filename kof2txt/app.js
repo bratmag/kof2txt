@@ -892,28 +892,27 @@
       });
 
       window.kof2txt = {
-        state,
-        refreshKofList,
-        processSelectedFile,
-        processAllFiles,
-        runCoreProbe,
-        ensureMenu,
-        async reconnect() {
-          state.api = null;
-          state.accessToken = null;
-          state.project = null;
-          await connectWorkspace();
-          await ensureMenu();
-          return true;
-        },
-        async prime() {
-          await ensureReady();
-          return {
-            accessToken: !!state.accessToken,
-            project: state.project
-          };
-        }
-      };
+  state,
+  refreshKofList,
+  processSelectedFile,
+  processAllFiles,
+  ensureMenu,
+  async reconnect() {
+    state.api = null;
+    state.accessToken = null;
+    state.project = null;
+    await connectWorkspace();
+    await ensureMenu();
+    return true;
+  },
+  async prime() {
+    await ensureReady();
+    return {
+      accessToken: !!state.accessToken,
+      project: state.project
+    };
+  }
+};
     } catch (err) {
       console.error(err);
       setStatus("Feil");

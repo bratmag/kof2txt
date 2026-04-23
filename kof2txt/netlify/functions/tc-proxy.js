@@ -18,6 +18,10 @@ exports.handler = async function handler(event) {
       return await handleProbeCore(body);
     }
 
+    if (action === "listProjectKofFiles") {
+      return await handleListProjectKofFiles(body);
+    }
+
     return jsonResponse(400, {
       ok: false,
       error: `Unknown action: ${String(action)}`
@@ -466,4 +470,197 @@ async function handleProbeCore(body) {
     versions,
     probeResult: probe
   });
+}
+
+async function handleListProjectKofFiles(body) {
+  const { token, projectId, projectLocation } = body;
+
+  if (!token || !projectId) {
+    return jsonResponse(400, {
+      ok: false,
+      error: "Mangler token eller projectId"
+    });
+  }
+
+  const listResult = await tryListProjectFilesCandidates({
+    token,
+    projectId,
+    projectLocation
+  });
+
+  return jsonResponse(200, listResult);
+}
+
+async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {
+  const base = getCoreBaseUrl(projectLocation);
+
+  const candidates = [
+    {
+      name: "projects-files-recursive",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/files?recursive=true`
+    },
+    {
+      name: "projects-files",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/files`
+    },
+    {
+      name: "projects-files-includePath",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/files?includeFolderPath=true`
+    },
+    {
+      name: "projects-search-kof",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/search?query=.kof&type=file`
+    },
+    {
+      name: "search-kof",
+      url: `${base}/search?projectId=${encodeURIComponent(projectId)}&query=.kof&type=file`
+    },
+    {
+      name: "projects-folders-root",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/folders`
+    }
+  ];
+
+  const diagnostics = [];
+
+  for (const candidate of candidates) {
+    try {
+      const res = await fetchJsonWithBearer(candidate.url, token);
+
+      diagnostics.push({
+        name: candidate.name,
+        url: candidate.url,
+        ok: res.ok,
+        status: res.status,
+        preview: shortText(res.text, 800)
+      });
+
+      if (!res.ok || !res.json) {
+        continue;
+      }
+
+      const files = normalizeFilesFromAnyResponse(res.json)
+        .filter((f) => f && f.id && isKofName(f.name))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }));
+
+      if (files.length) {
+        return {
+          ok: true,
+          action: "listProjectKofFiles",
+          project: {
+            id: projectId,
+            location: projectLocation
+          },
+          source: candidate.name,
+          candidatesTried: diagnostics.length,
+          files,
+          diagnostics
+        };
+      }
+    } catch (err) {
+      diagnostics.push({
+        name: candidate.name,
+        url: candidate.url,
+        ok: false,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  return {
+    ok: false,
+    action: "listProjectKofFiles",
+    error: "Fant ingen fungerende kandidat for fillisting, eller ingen .kof-filer ble funnet.",
+    project: {
+      id: projectId,
+      location: projectLocation
+    },
+    candidatesTried: diagnostics.length,
+    diagnostics
+  };
+}
+
+function isKofName(name) {
+  return /\.kof$/i.test(String(name || ""));
+}
+
+function normalizeFilesFromAnyResponse(payload) {
+  const out = [];
+  const seen = new Set();
+
+  walkAny(payload, [], out, seen);
+
+  return out;
+}
+
+function walkAny(node, pathParts, out, seen) {
+  if (node == null) return;
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      walkAny(item, pathParts, out, seen);
+    }
+    return;
+  }
+
+  if (typeof node !== "object") {
+    return;
+  }
+
+  const maybeName =
+    node.name ||
+    node.fileName ||
+    node.filename ||
+    node.title ||
+    null;
+
+  const maybeId =
+    node.id ||
+    node.fileId ||
+    node.versionId ||
+    null;
+
+  const maybePath =
+    node.path ||
+    node.folderPath ||
+    node.fullPath ||
+    node.location ||
+    null;
+
+  const childPath = maybeName ? [...pathParts, maybeName] : pathParts;
+
+  if (maybeId && maybeName) {
+    const normalized = {
+      id: String(maybeId),
+      name: String(maybeName),
+      path: maybePath ? String(maybePath) : buildPath(pathParts)
+    };
+
+    const key = `${normalized.id}|${normalized.name}|${normalized.path}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(normalized);
+    }
+  }
+
+  for (const [key, value] of Object.entries(node)) {
+    if (
+      key === "parent" ||
+      key === "parents" ||
+      key === "_links" ||
+      key === "links" ||
+      key === "permissions"
+    ) {
+      continue;
+    }
+
+    if (Array.isArray(value) || (value && typeof value === "object")) {
+      walkAny(value, childPath, out, seen);
+    }
+  }
+}
+
+function buildPath(parts) {
+  const p = (parts || []).filter(Boolean).map((x) => String(x).trim()).filter(Boolean);
+  return p.length ? p.join("/") : "";
 }

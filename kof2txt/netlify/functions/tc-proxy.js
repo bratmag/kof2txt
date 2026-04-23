@@ -583,7 +583,31 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
 function isKofName(name) {
   return /\.kof$/i.test(String(name || ""));
 }
+function normalizePathValue(pathValue) {
+  if (!pathValue) return "";
 
+  if (typeof pathValue === "string") {
+    return pathValue;
+  }
+
+  if (Array.isArray(pathValue)) {
+    return pathValue
+      .map((item) => {
+        if (!item) return "";
+        if (typeof item === "string") return item;
+        if (typeof item === "object") return item.name || item.title || item.id || "";
+        return "";
+      })
+      .filter(Boolean)
+      .join("/");
+  }
+
+  if (typeof pathValue === "object") {
+    return pathValue.name || pathValue.title || pathValue.id || "";
+  }
+
+  return String(pathValue);
+}
 function normalizeFilesFromAnyResponse(payload) {
   const out = [];
   const seen = new Set();
@@ -633,7 +657,7 @@ function walkAny(node, pathParts, out, seen) {
     const normalized = {
       id: String(maybeId),
       name: String(maybeName),
-      path: maybePath ? String(maybePath) : buildPath(pathParts)
+      path: maybePath ? normalizePathValue(maybePath) : buildPath(pathParts)
     };
 
     const key = `${normalized.id}|${normalized.name}|${normalized.path}`;

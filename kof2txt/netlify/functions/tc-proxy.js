@@ -546,174 +546,102 @@ async function handleUploadConvertedTxt(body) {
   if (!token || !projectId || !fileName || typeof content !== "string") {
     return jsonResponse(400, {
       ok: false,
-      error: "Mangler token, projectId, fileName eller content"
+      error: "Mangler input"
     });
   }
 
   if (!parentId) {
     return jsonResponse(400, {
       ok: false,
-      error: "Mangler parentId for upload"
+      error: "Mangler parentId"
     });
   }
 
-  const normalizedFileName = normalizeUploadTarget(fileName);
   const base = getCoreBaseUrl(projectLocation);
-
-  const urlVariants = [
-    `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-    `${base}/files?parentId=${encodeURIComponent(parentId)}&name=${encodeURIComponent(normalizedFileName)}`,
-    `${base}/files?parentId=${encodeURIComponent(parentId)}&fileName=${encodeURIComponent(normalizedFileName)}`
-  ];
+  const normalizedFileName = normalizeUploadTarget(fileName);
 
   const diagnostics = [];
 
-  for (const uploadUrl of urlVariants) {
-    try {
-      // Variant 1: multipart/form-data, file-part som octet-stream
-      const form = new FormData();
-      const blob = new Blob([content], { type: "application/octet-stream" });
-      form.append("file", blob, normalizedFileName);
-
-      const multipartRes = await fetch(uploadUrl, {
+  try {
+    // 🔹 STEP 1: Opprett fil og få uploadUrl
+    const createRes = await fetchWithBearer(
+      `${base}/files`,
+      token,
+      {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${token}`
+          "Content-Type": "application/json"
         },
-        body: form
-      });
-
-      const multipartText = await multipartRes.text();
-      const multipartJson = safeJsonParse(multipartText);
-
-      diagnostics.push({
-        step: "multipartUpload",
-        url: uploadUrl,
-        ok: multipartRes.ok,
-        status: multipartRes.status,
-        preview: shortText(multipartText, 700)
-      });
-
-      if (multipartRes.ok) {
-        return jsonResponse(200, {
-          ok: true,
-          action: "uploadConvertedTxt",
-          project: {
-            id: projectId,
-            location: projectLocation
-          },
-          file: {
-            name: normalizedFileName,
-            parentId
-          },
-          uploadResult: multipartJson || multipartText,
-          diagnostics
-        });
+        body: JSON.stringify({
+          name: normalizedFileName,
+          parentId: parentId,
+          projectId: projectId
+        })
       }
+    );
 
-      // Variant 2: rå binær body uten charset
-      const octetRes = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/octet-stream",
-          "X-File-Name": normalizedFileName,
-          "Content-Disposition": `attachment; filename="${normalizedFileName}"`
-        },
-        body: content
-      });
+    diagnostics.push({
+      step: "createFile",
+      ok: createRes.ok,
+      status: createRes.status,
+      preview: shortText(createRes.text, 700)
+    });
 
-      const octetText = await octetRes.text();
-      const octetJson = safeJsonParse(octetText);
+    const uploadUrl = extractPossibleUrl(createRes.json);
 
-      diagnostics.push({
-        step: "octetStreamUpload",
-        url: uploadUrl,
-        ok: octetRes.ok,
-        status: octetRes.status,
-        preview: shortText(octetText, 700)
-      });
-
-      if (octetRes.ok) {
-        return jsonResponse(200, {
-          ok: true,
-          action: "uploadConvertedTxt",
-          project: {
-            id: projectId,
-            location: projectLocation
-          },
-          file: {
-            name: normalizedFileName,
-            parentId
-          },
-          uploadResult: octetJson || octetText,
-          diagnostics
-        });
-      }
-
-      // Variant 3: PUT raw octet-stream
-      const putRes = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/octet-stream",
-          "X-File-Name": normalizedFileName,
-          "Content-Disposition": `attachment; filename="${normalizedFileName}"`
-        },
-        body: content
-      });
-
-      const putText = await putRes.text();
-      const putJson = safeJsonParse(putText);
-
-      diagnostics.push({
-        step: "putOctetStreamUpload",
-        url: uploadUrl,
-        ok: putRes.ok,
-        status: putRes.status,
-        preview: shortText(putText, 700)
-      });
-
-      if (putRes.ok) {
-        return jsonResponse(200, {
-          ok: true,
-          action: "uploadConvertedTxt",
-          project: {
-            id: projectId,
-            location: projectLocation
-          },
-          file: {
-            name: normalizedFileName,
-            parentId
-          },
-          uploadResult: putJson || putText,
-          diagnostics
-        });
-      }
-    } catch (err) {
-      diagnostics.push({
-        step: "exception",
-        url: uploadUrl,
+    if (!createRes.ok || !uploadUrl) {
+      return jsonResponse(200, {
         ok: false,
-        error: err?.message || String(err)
+        error: "Fikk ikke uploadUrl",
+        diagnostics
       });
     }
-  }
 
-  return jsonResponse(200, {
-    ok: false,
-    action: "uploadConvertedTxt",
-    error: "Direkte upload feilet.",
-    project: {
-      id: projectId,
-      location: projectLocation
-    },
-    file: {
-      name: normalizedFileName,
-      parentId
-    },
-    diagnostics
-  });
+    // 🔹 STEP 2: Last opp til signed URL
+    const uploadRes = await fetchRaw(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/octet-stream"
+      },
+      body: content
+    });
+
+    diagnostics.push({
+      step: "uploadToSignedUrl",
+      ok: uploadRes.ok,
+      status: uploadRes.status,
+      preview: shortText(uploadRes.text, 700)
+    });
+
+    if (!uploadRes.ok) {
+      return jsonResponse(200, {
+        ok: false,
+        error: "Upload til signed URL feilet",
+        diagnostics
+      });
+    }
+
+    return jsonResponse(200, {
+      ok: true,
+      action: "uploadConvertedTxt",
+      project: {
+        id: projectId,
+        location: projectLocation
+      },
+      file: {
+        name: normalizedFileName,
+        parentId
+      },
+      diagnostics
+    });
+
+  } catch (err) {
+    return jsonResponse(500, {
+      ok: false,
+      error: err?.message || String(err),
+      diagnostics
+    });
+  }
 }
 
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {

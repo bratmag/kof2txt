@@ -559,119 +559,161 @@ async function handleUploadConvertedTxt(body) {
 
   const normalizedFileName = normalizeUploadTarget(fileName);
   const base = getCoreBaseUrl(projectLocation);
-  const uploadUrl = `${base}/files?parentId=${encodeURIComponent(parentId)}`;
+
+  const urlVariants = [
+    `${base}/files?parentId=${encodeURIComponent(parentId)}`,
+    `${base}/files?parentId=${encodeURIComponent(parentId)}&name=${encodeURIComponent(normalizedFileName)}`,
+    `${base}/files?parentId=${encodeURIComponent(parentId)}&fileName=${encodeURIComponent(normalizedFileName)}`
+  ];
 
   const diagnostics = [];
 
-  try {
-    const form = new FormData();
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    form.append("file", blob, normalizedFileName);
+  for (const uploadUrl of urlVariants) {
+    try {
+      // Variant 1: multipart/form-data, file-part som octet-stream
+      const form = new FormData();
+      const blob = new Blob([content], { type: "application/octet-stream" });
+      form.append("file", blob, normalizedFileName);
 
-    const multipartRes = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`
-      },
-      body: form
-    });
-
-    const multipartText = await multipartRes.text();
-    const multipartJson = safeJsonParse(multipartText);
-
-    diagnostics.push({
-      step: "multipartUpload",
-      url: uploadUrl,
-      ok: multipartRes.ok,
-      status: multipartRes.status,
-      preview: shortText(multipartText, 700)
-    });
-
-    if (multipartRes.ok) {
-      return jsonResponse(200, {
-        ok: true,
-        action: "uploadConvertedTxt",
-        project: {
-          id: projectId,
-          location: projectLocation
+      const multipartRes = await fetch(uploadUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`
         },
-        file: {
-          name: normalizedFileName,
-          parentId
+        body: form
+      });
+
+      const multipartText = await multipartRes.text();
+      const multipartJson = safeJsonParse(multipartText);
+
+      diagnostics.push({
+        step: "multipartUpload",
+        url: uploadUrl,
+        ok: multipartRes.ok,
+        status: multipartRes.status,
+        preview: shortText(multipartText, 700)
+      });
+
+      if (multipartRes.ok) {
+        return jsonResponse(200, {
+          ok: true,
+          action: "uploadConvertedTxt",
+          project: {
+            id: projectId,
+            location: projectLocation
+          },
+          file: {
+            name: normalizedFileName,
+            parentId
+          },
+          uploadResult: multipartJson || multipartText,
+          diagnostics
+        });
+      }
+
+      // Variant 2: rå binær body uten charset
+      const octetRes = await fetch(uploadUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/octet-stream",
+          "X-File-Name": normalizedFileName,
+          "Content-Disposition": `attachment; filename="${normalizedFileName}"`
         },
-        uploadResult: multipartJson || multipartText,
-        diagnostics
+        body: content
+      });
+
+      const octetText = await octetRes.text();
+      const octetJson = safeJsonParse(octetText);
+
+      diagnostics.push({
+        step: "octetStreamUpload",
+        url: uploadUrl,
+        ok: octetRes.ok,
+        status: octetRes.status,
+        preview: shortText(octetText, 700)
+      });
+
+      if (octetRes.ok) {
+        return jsonResponse(200, {
+          ok: true,
+          action: "uploadConvertedTxt",
+          project: {
+            id: projectId,
+            location: projectLocation
+          },
+          file: {
+            name: normalizedFileName,
+            parentId
+          },
+          uploadResult: octetJson || octetText,
+          diagnostics
+        });
+      }
+
+      // Variant 3: PUT raw octet-stream
+      const putRes = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/octet-stream",
+          "X-File-Name": normalizedFileName,
+          "Content-Disposition": `attachment; filename="${normalizedFileName}"`
+        },
+        body: content
+      });
+
+      const putText = await putRes.text();
+      const putJson = safeJsonParse(putText);
+
+      diagnostics.push({
+        step: "putOctetStreamUpload",
+        url: uploadUrl,
+        ok: putRes.ok,
+        status: putRes.status,
+        preview: shortText(putText, 700)
+      });
+
+      if (putRes.ok) {
+        return jsonResponse(200, {
+          ok: true,
+          action: "uploadConvertedTxt",
+          project: {
+            id: projectId,
+            location: projectLocation
+          },
+          file: {
+            name: normalizedFileName,
+            parentId
+          },
+          uploadResult: putJson || putText,
+          diagnostics
+        });
+      }
+    } catch (err) {
+      diagnostics.push({
+        step: "exception",
+        url: uploadUrl,
+        ok: false,
+        error: err?.message || String(err)
       });
     }
-
-    const rawRes = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "text/plain;charset=utf-8",
-        "X-File-Name": normalizedFileName
-      },
-      body: content
-    });
-
-    const rawText = await rawRes.text();
-    const rawJson = safeJsonParse(rawText);
-
-    diagnostics.push({
-      step: "rawUpload",
-      url: uploadUrl,
-      ok: rawRes.ok,
-      status: rawRes.status,
-      preview: shortText(rawText, 700)
-    });
-
-    if (rawRes.ok) {
-      return jsonResponse(200, {
-        ok: true,
-        action: "uploadConvertedTxt",
-        project: {
-          id: projectId,
-          location: projectLocation
-        },
-        file: {
-          name: normalizedFileName,
-          parentId
-        },
-        uploadResult: rawJson || rawText,
-        diagnostics
-      });
-    }
-
-    return jsonResponse(200, {
-      ok: false,
-      action: "uploadConvertedTxt",
-      error: "Direkte upload feilet.",
-      project: {
-        id: projectId,
-        location: projectLocation
-      },
-      file: {
-        name: normalizedFileName,
-        parentId
-      },
-      diagnostics
-    });
-  } catch (err) {
-    return jsonResponse(500, {
-      ok: false,
-      action: "uploadConvertedTxt",
-      error: err?.message || String(err),
-      project: {
-        id: projectId,
-        location: projectLocation
-      },
-      file: {
-        name: normalizedFileName,
-        parentId
-      },
-      diagnostics
-    });
   }
+
+  return jsonResponse(200, {
+    ok: false,
+    action: "uploadConvertedTxt",
+    error: "Direkte upload feilet.",
+    project: {
+      id: projectId,
+      location: projectLocation
+    },
+    file: {
+      name: normalizedFileName,
+      parentId
+    },
+    diagnostics
+  });
 }
 
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {

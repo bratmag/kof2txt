@@ -751,15 +751,35 @@
       const converted = await downloadAndConvertFile(file);
       state.lastResult = converted.result;
 
-      setStatus(`Klar: ${converted.outName}`);
-      setOutput({
-        ok: true,
-        project: converted.result.project,
-        file: converted.result.file,
-        source: converted.result.source,
-        contentType: converted.result.contentType,
-        preview: shortText(converted.result.text || "", 1500)
-      });
+const uploadRes = await callProxy("uploadConvertedTxt", {
+  token: state.accessToken,
+  projectId: state.project.id,
+  projectLocation: state.project.location,
+  fileName: converted.outName,
+  content: converted.txt,
+  parentId: file.parentId || converted.result.file?.parentId || null
+});
+
+setStatus(`Klar: ${converted.outName}`);
+
+setOutput({
+  ok: uploadRes.json?.ok === false ? false : true,
+  project: converted.result.project,
+  sourceFile: converted.result.file,
+  convertedFile: {
+    name: converted.outName,
+    uploaded: !!uploadRes.json?.ok
+  },
+  uploadResult: uploadRes.json || {
+    ok: false,
+    status: uploadRes.status,
+    preview: shortText(uploadRes.text || "", 1500)
+  },
+  preview: shortText(converted.result.text || "", 1500)
+});
+
+// Behold lokal nedlasting inntil vi vet at upload fungerer stabilt
+triggerDownload(converted.outName, converted.txt);
 
       triggerDownload(converted.outName, converted.txt);
     } catch (err) {
@@ -794,13 +814,29 @@
 
         try {
           const converted = await downloadAndConvertFile(file);
-          triggerDownload(converted.outName, converted.txt);
 
-          summary.push({
-            ok: true,
-            file: file.name,
-            outName: converted.outName
-          });
+const uploadRes = await callProxy("uploadConvertedTxt", {
+  token: state.accessToken,
+  projectId: state.project.id,
+  projectLocation: state.project.location,
+  fileName: converted.outName,
+  content: converted.txt,
+  parentId: file.parentId || converted.result.file?.parentId || null
+});
+
+// Behold lokal nedlasting inntil vi vet at upload fungerer stabilt
+triggerDownload(converted.outName, converted.txt);
+
+summary.push({
+  ok: !!uploadRes.json?.ok,
+  file: file.name,
+  outName: converted.outName,
+  uploadResult: uploadRes.json || {
+    ok: false,
+    status: uploadRes.status,
+    preview: shortText(uploadRes.text || "", 1500)
+  }
+});
         } catch (err) {
           summary.push({
             ok: false,

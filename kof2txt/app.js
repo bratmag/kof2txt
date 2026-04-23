@@ -5,7 +5,9 @@
     DEBUG: true,
     CONNECT_TIMEOUT_MS: 30000,
     TOKEN_WAIT_MS: 30000,
-    PROXY_URL: "/.netlify/functions/tc-proxy"
+    PROXY_URL: "/.netlify/functions/tc-proxy",
+    DEFAULT_TEST_FILE_ID: "RZPc08vH2VU",
+    DEFAULT_TEST_FILE_NAME: "Eiendomspunkter kof.kof"
   };
 
   const state = {
@@ -14,7 +16,6 @@
     project: null,
     selectedFile: null,
     lastResult: null,
-    fileList: [],
     tokenWaiters: [],
     isEmbedded: false
   };
@@ -79,6 +80,10 @@
     });
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function triggerDownload(filename, text) {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -103,6 +108,23 @@
     return isKofFileName(n) ? n : `${n}.kof`;
   }
 
+  function fileFromInputs() {
+    const id = String(ui.fileIdInput?.value || "").trim();
+    const name = ensureKofFileName(ui.fileNameInput?.value || "");
+
+    if (!id) return null;
+    return { id, name };
+  }
+
+  function setInputsFromFile(file) {
+    if (!file) return;
+    if (ui.fileIdInput) ui.fileIdInput.value = file.id || "";
+    if (ui.fileNameInput) ui.fileNameInput.value = file.name || "";
+  }
+function clearInputs() {
+  if (ui.fileIdInput) ui.fileIdInput.value = "";
+  if (ui.fileNameInput) ui.fileNameInput.value = "";
+}
   function resolveTokenWaiters(token) {
     const waiters = [...state.tokenWaiters];
     state.tokenWaiters = [];
@@ -150,7 +172,7 @@
 
     const intro = document.createElement("div");
     intro.className = "muted";
-    intro.textContent = "Hent .kof-filer fra prosjektet og konverter valgt fil eller alle filer til .txt.";
+    intro.textContent = "Velg en .kof-fil i Trimble Connect, eller skriv inn File ID manuelt.";
 
     titleCard.appendChild(title);
     titleCard.appendChild(intro);
@@ -169,51 +191,51 @@
     projectCard.appendChild(projectLabel);
     projectCard.appendChild(projectValue);
 
-    const actionCard = document.createElement("div");
-    actionCard.className = "card";
+    const formCard = document.createElement("div");
+    formCard.className = "card";
+
+    const form = document.createElement("div");
+    form.className = "row";
+
+    const fileIdWrap = document.createElement("div");
+    const fileIdLabel = document.createElement("label");
+    fileIdLabel.textContent = "File ID";
+    const fileIdInput = document.createElement("input");
+    fileIdInput.type = "text";
+    fileIdInput.placeholder = "F.eks. RZPc08vH2VU";
+    fileIdWrap.appendChild(fileIdLabel);
+    fileIdWrap.appendChild(fileIdInput);
+
+    const fileNameWrap = document.createElement("div");
+    const fileNameLabel = document.createElement("label");
+    fileNameLabel.textContent = "Filnavn";
+    const fileNameInput = document.createElement("input");
+    fileNameInput.type = "text";
+    fileNameInput.placeholder = "F.eks. Eiendomspunkter kof.kof";
+    fileNameWrap.appendChild(fileNameLabel);
+    fileNameWrap.appendChild(fileNameInput);
+
+    form.appendChild(fileIdWrap);
+    form.appendChild(fileNameWrap);
 
     const btnRow = document.createElement("div");
     btnRow.className = "btn-row";
 
-    const refreshBtn = document.createElement("button");
-    refreshBtn.textContent = "Oppdater liste";
+    const convertBtn = document.createElement("button");
+    convertBtn.textContent = "Konverter KOF";
 
-    const convertSelectedBtn = document.createElement("button");
-    convertSelectedBtn.textContent = "Konverter valgt";
-
-    const convertAllBtn = document.createElement("button");
-    convertAllBtn.textContent = "Konverter alle";
+    const testBtn = document.createElement("button");
+    testBtn.textContent = "Bruk testfil";
 
     const probeBtn = document.createElement("button");
-    probeBtn.textContent = "Core probe valgt";
+    probeBtn.textContent = "Core probe";
 
-    btnRow.appendChild(refreshBtn);
-    btnRow.appendChild(convertSelectedBtn);
-    btnRow.appendChild(convertAllBtn);
+    btnRow.appendChild(convertBtn);
+    btnRow.appendChild(testBtn);
     btnRow.appendChild(probeBtn);
 
-    const selectedInfo = document.createElement("div");
-    selectedInfo.className = "muted";
-    selectedInfo.style.marginTop = "8px";
-    selectedInfo.textContent = "Ingen fil valgt.";
-
-    const listWrap = document.createElement("div");
-    listWrap.style.marginTop = "12px";
-
-    const listLabel = document.createElement("div");
-    listLabel.style.fontWeight = "bold";
-    listLabel.style.marginBottom = "6px";
-    listLabel.textContent = "KOF-filer i prosjektet";
-
-    const fileList = document.createElement("div");
-    fileList.id = "fileList";
-
-    listWrap.appendChild(listLabel);
-    listWrap.appendChild(fileList);
-
-    actionCard.appendChild(btnRow);
-    actionCard.appendChild(selectedInfo);
-    actionCard.appendChild(listWrap);
+    formCard.appendChild(form);
+    formCard.appendChild(btnRow);
 
     const statusBox = document.createElement("div");
     statusBox.id = "statusBox";
@@ -225,7 +247,7 @@
 
     root.appendChild(titleCard);
     root.appendChild(projectCard);
-    root.appendChild(actionCard);
+    root.appendChild(formCard);
     root.appendChild(statusBox);
     root.appendChild(output);
 
@@ -234,81 +256,14 @@
     ui = {
       root,
       projectValue,
-      refreshBtn,
-      convertSelectedBtn,
-      convertAllBtn,
+      fileIdInput,
+      fileNameInput,
+      convertBtn,
+      testBtn,
       probeBtn,
-      selectedInfo,
-      fileList,
       status: statusBox,
       output
     };
-  }
-
-  function renderFileList() {
-    if (!ui.fileList) return;
-
-    ui.fileList.innerHTML = "";
-
-    if (!state.fileList.length) {
-      const empty = document.createElement("div");
-      empty.className = "muted";
-      empty.textContent = "Ingen .kof-filer funnet ennå.";
-      ui.fileList.appendChild(empty);
-      return;
-    }
-
-    const wrap = document.createElement("div");
-    wrap.style.display = "grid";
-    wrap.style.gap = "8px";
-
-    for (const file of state.fileList) {
-      const row = document.createElement("label");
-      row.style.display = "block";
-      row.style.padding = "8px";
-      row.style.border = "1px solid #ddd";
-      row.style.borderRadius = "8px";
-      row.style.cursor = "pointer";
-
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "kofFile";
-      radio.value = file.id;
-      radio.style.marginRight = "8px";
-      radio.checked = state.selectedFile?.id === file.id;
-
-      radio.addEventListener("change", () => {
-        state.selectedFile = file;
-        updateSelectedInfo();
-      });
-
-      const name = document.createElement("strong");
-      name.textContent = file.name || "(uten navn)";
-
-      const meta = document.createElement("div");
-      meta.className = "muted";
-      meta.style.marginTop = "4px";
-      meta.textContent = `ID: ${file.id}${file.path ? ` | Sti: ${file.path}` : ""}`;
-
-      row.appendChild(radio);
-      row.appendChild(name);
-      row.appendChild(meta);
-      wrap.appendChild(row);
-    }
-
-    ui.fileList.appendChild(wrap);
-  }
-
-  function updateSelectedInfo() {
-    if (!ui.selectedInfo) return;
-
-    if (!state.selectedFile) {
-      ui.selectedInfo.textContent = "Ingen fil valgt.";
-      return;
-    }
-
-    ui.selectedInfo.textContent =
-      `Valgt fil: ${state.selectedFile.name} | ID: ${state.selectedFile.id}`;
   }
 
   async function connectWorkspace() {
@@ -331,25 +286,6 @@
     debug("API keys:", Object.keys(api || {}));
 
     return api;
-  }
-
-  async function ensureMenu() {
-    if (!state.api?.extension?.setMenu) {
-      debug("extension.setMenu finnes ikke.");
-      return;
-    }
-
-    try {
-      await state.api.extension.setMenu([
-        {
-          title: "Konverter KOF",
-          command: "open"
-        }
-      ]);
-      debug("Meny satt.");
-    } catch (err) {
-      console.error("Kunne ikke sette meny:", err);
-    }
   }
 
   async function requestAccessToken() {
@@ -525,37 +461,39 @@
     return dedupePoints(points);
   }
 
-  function tryParseFreePointLine(line) {
-    const s = String(line || "").trim();
+function tryParseFreePointLine(line) {
+  const s = String(line || "").trim();
 
-    let m = s.match(
-      /^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/
-    );
+  // KOF-linjer: 05 <punktid> <nord> <øst> <høyde>
+  let m = s.match(
+    /^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/
+  );
 
-    if (m) {
-      return {
-        name: m[1],
-        north: parseNumber(m[2]),
-        east: parseNumber(m[3]),
-        height: parseNumber(m[4])
-      };
-    }
-
-    m = s.match(
-      /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/
-    );
-
-    if (m) {
-      return {
-        name: m[1],
-        north: parseNumber(m[2]),
-        east: parseNumber(m[3]),
-        height: parseNumber(m[4])
-      };
-    }
-
-    return null;
+  if (m) {
+    return {
+      name: m[1],
+      north: parseNumber(m[2]),
+      east: parseNumber(m[3]),
+      height: parseNumber(m[4])
+    };
   }
+
+  // fallback: generisk 4-felts linje
+  m = s.match(
+    /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/
+  );
+
+  if (m) {
+    return {
+      name: m[1],
+      north: parseNumber(m[2]),
+      east: parseNumber(m[3]),
+      height: parseNumber(m[4])
+    };
+  }
+
+  return null;
+}
 
   function isCompletePoint(p) {
     return !!p && p.name && p.north != null && p.east != null;
@@ -637,22 +575,38 @@
     return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key);
   }
 
-  async function refreshKofList() {
+  async function processSelectedFile() {
     try {
       await ensureReady();
-      setStatus("Henter .kof-filer fra prosjektet ...");
 
-      const proxyRes = await callProxy("listProjectKofFiles", {
+      const file = fileFromInputs();
+      if (!file) {
+        setStatus("Mangler File ID");
+        setOutput({
+          ok: false,
+          step: "noSelectedFile",
+          message: "Skriv inn File ID først."
+        });
+        return;
+      }
+
+      state.selectedFile = file;
+
+      setStatus(`Laster ned ${file.name} ...`);
+
+      const proxyRes = await callProxy("downloadKofFile", {
         token: state.accessToken,
         projectId: state.project.id,
-        projectLocation: state.project.location
+        projectLocation: state.project.location,
+        fileId: file.id,
+        fileName: file.name
       });
 
       if (!proxyRes.ok || !proxyRes.json) {
-        setStatus("Proxy-feil ved listing");
+        setStatus("Proxy-feil");
         setOutput({
           ok: false,
-          step: "listProxyHttp",
+          step: "proxyHttp",
           status: proxyRes.status,
           preview: shortText(proxyRes.text, 1500)
         });
@@ -660,167 +614,31 @@
       }
 
       const result = proxyRes.json;
+      state.lastResult = result;
 
       if (!result.ok) {
-        setStatus("Klarte ikke hente filliste");
+        setStatus("Klarte ikke laste ned KOF-fil");
         setOutput(result);
         return;
       }
 
-      state.fileList = Array.isArray(result.files) ? result.files : [];
+      const txt = convertKofToTxt(result.text || "");
+      const outName = String(result.file?.name || "output.kof").replace(/\.kof$/i, ".txt");
 
-      if (!state.fileList.length) {
-        state.selectedFile = null;
-      } else if (!state.selectedFile || !state.fileList.some((f) => f.id === state.selectedFile.id)) {
-        state.selectedFile = state.fileList[0];
-      }
-
-      renderFileList();
-      updateSelectedInfo();
-
-      setStatus(`Fant ${state.fileList.length} .kof-fil(er)`);
+      setStatus("KOF-fil lastet ned");
       setOutput({
         ok: true,
-        action: "listProjectKofFiles",
         project: result.project,
-        fileCount: state.fileList.length,
-        candidatesTried: result.candidatesTried,
-        diagnostics: result.diagnostics
-      });
-    } catch (err) {
-      console.error(err);
-      setStatus("Feil ved henting av filliste");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
-    }
-  }
-
-  async function downloadAndConvertFile(file) {
-    const proxyRes = await callProxy("downloadKofFile", {
-      token: state.accessToken,
-      projectId: state.project.id,
-      projectLocation: state.project.location,
-      fileId: file.id,
-      fileName: file.name
-    });
-
-    if (!proxyRes.ok || !proxyRes.json) {
-      throw new Error(`Proxy-feil (${proxyRes.status})`);
-    }
-
-    const result = proxyRes.json;
-    if (!result.ok) {
-      throw new Error(result.error || result.step || "Klarte ikke laste ned KOF-fil");
-    }
-
-    const txt = convertKofToTxt(result.text || "");
-    const outName = String(result.file?.name || file.name || "output.kof").replace(/\.kof$/i, ".txt");
-
-    return {
-      outName,
-      txt,
-      result
-    };
-  }
-
-  async function processSelectedFile() {
-    try {
-      await ensureReady();
-
-      const file = state.selectedFile;
-      if (!file?.id) {
-        setStatus("Ingen fil valgt");
-        setOutput({
-          ok: false,
-          step: "noSelectedFile",
-          message: "Velg en .kof-fil i listen først."
-        });
-        return;
-      }
-
-      setStatus(`Laster ned ${file.name} ...`);
-
-      const converted = await downloadAndConvertFile(file);
-      state.lastResult = converted.result;
-
-      setStatus(`Klar: ${converted.outName}`);
-      setOutput({
-        ok: true,
-        project: converted.result.project,
-        file: converted.result.file,
-        source: converted.result.source,
-        contentType: converted.result.contentType,
-        preview: shortText(converted.result.text || "", 1500)
+        file: result.file,
+        source: result.source,
+        contentType: result.contentType,
+        preview: shortText(result.text || "", 1500)
       });
 
-      triggerDownload(converted.outName, converted.txt);
+      triggerDownload(outName, txt);
     } catch (err) {
       console.error(err);
       setStatus("Feil");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
-    }
-  }
-
-  async function processAllFiles() {
-    try {
-      await ensureReady();
-
-      if (!state.fileList.length) {
-        setStatus("Ingen .kof-filer i listen");
-        setOutput({
-          ok: false,
-          step: "noFiles",
-          message: "Trykk Oppdater liste først."
-        });
-        return;
-      }
-
-      const summary = [];
-      let count = 0;
-
-      for (const file of state.fileList) {
-        setStatus(`Konverterer (${count + 1}/${state.fileList.length}) ${file.name} ...`);
-
-        try {
-          const converted = await downloadAndConvertFile(file);
-          triggerDownload(converted.outName, converted.txt);
-
-          summary.push({
-            ok: true,
-            file: file.name,
-            outName: converted.outName
-          });
-        } catch (err) {
-          summary.push({
-            ok: false,
-            file: file.name,
-            error: err?.message || String(err)
-          });
-        }
-
-        count += 1;
-      }
-
-      const okCount = summary.filter((x) => x.ok).length;
-      const failCount = summary.length - okCount;
-
-      setStatus(`Ferdig. OK: ${okCount}, Feil: ${failCount}`);
-      setOutput({
-        ok: failCount === 0,
-        action: "convertAll",
-        total: summary.length,
-        okCount,
-        failCount,
-        files: summary
-      });
-    } catch (err) {
-      console.error(err);
-      setStatus("Feil i Konverter alle");
       setOutput({
         ok: false,
         error: err?.message || String(err)
@@ -832,16 +650,17 @@
     try {
       await ensureReady();
 
-      const file = state.selectedFile;
+      const file = fileFromInputs();
       if (!file?.id) {
         setOutput({
           ok: false,
           step: "probeNoFile",
-          message: "Velg en fil først."
+          message: "Skriv inn File ID først."
         });
         return;
       }
 
+      state.selectedFile = file;
       setStatus("Kjører Core probe...");
 
       const proxyRes = await callProxy("probeCore", {
@@ -865,36 +684,87 @@
     }
   }
 
-  function onWorkspaceEvent(event, args) {
-    debug("[TC EVENT]", event, args);
+  function useTestFile() {
+    const testFile = {
+      id: CONFIG.DEFAULT_TEST_FILE_ID,
+      name: CONFIG.DEFAULT_TEST_FILE_NAME
+    };
 
-    if (event === "extension.accessToken") {
-      const token = args?.data;
-      if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
-        state.accessToken = token;
-        resolveTokenWaiters(token);
-        debug("Access token mottatt via event.");
-      }
-      return;
-    }
+    state.selectedFile = testFile;
+    setInputsFromFile(testFile);
 
-    if (event === "extension.command") {
-      debug("extension.command:", args);
-      return;
-    }
+    setStatus(`Testfil satt: ${testFile.name}`);
+    setOutput({
+      ok: true,
+      message: "Testfil satt i inputfeltene",
+      file: testFile
+    });
   }
 
-  function wireUi() {
-    ui.refreshBtn.addEventListener("click", () => {
-      refreshKofList();
-    });
+  function onWorkspaceEvent(event, args) {
+  debug("[TC EVENT]", event, args);
 
-    ui.convertSelectedBtn.addEventListener("click", () => {
+  if (event === "extension.accessToken") {
+    const token = args?.data;
+    if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
+      state.accessToken = token;
+      resolveTokenWaiters(token);
+      debug("Access token mottatt via event.");
+    }
+    return;
+  }
+
+  if (event === "extension.fileSelected") {
+    const file =
+      args?.data?.file ||
+      args?.file ||
+      args?.data ||
+      null;
+
+    debug("fileSelected kandidat:", file);
+
+    if (!file || !file.id) {
+      setStatus("Ingen fil valgt");
+      return;
+    }
+
+    const picked = {
+      id: String(file.id || "").trim(),
+      name: ensureKofFileName(file.name || "")
+    };
+
+    state.selectedFile = picked;
+    setInputsFromFile(picked);
+
+    if (isKofFileName(picked.name)) {
+      setStatus(`KOF-fil valgt automatisk: ${picked.name}`);
+      setOutput({
+        ok: true,
+        source: "extension.fileSelected",
+        message: "Valgt .kof-fil ble autodetektert.",
+        file: picked
+      });
+    } else {
+      setStatus(`Fil valgt, men ikke .kof: ${picked.name}`);
+      setOutput({
+        ok: false,
+        source: "extension.fileSelected",
+        message: "Valgt fil er ikke en .kof-fil.",
+        file: picked
+      });
+    }
+
+    return;
+  }
+}
+
+  function wireUi() {
+    ui.convertBtn.addEventListener("click", () => {
       processSelectedFile();
     });
 
-    ui.convertAllBtn.addEventListener("click", () => {
-      processAllFiles();
+    ui.testBtn.addEventListener("click", () => {
+      useTestFile();
     });
 
     ui.probeBtn.addEventListener("click", () => {
@@ -909,27 +779,24 @@
 
       setStatus("Starter...");
       await connectWorkspace();
-      await ensureMenu();
 
-      setStatus("Klar. Trykk Oppdater liste.");
+      setStatus("Klar. Skriv inn File ID og trykk Konverter KOF.");
       setOutput({
         ok: true,
         embedded: state.isEmbedded,
-        message: "Extension lastet. Token og prosjekt hentes når du trykker Oppdater liste eller kjører en handling."
+        message: "Extension lastet. Token og prosjekt hentes først når du kjører en handling."
       });
 
       window.kof2txt = {
         state,
-        refreshKofList,
         processSelectedFile,
-        processAllFiles,
         runCoreProbe,
+        useTestFile,
         async reconnect() {
           state.api = null;
           state.accessToken = null;
           state.project = null;
           await connectWorkspace();
-          await ensureMenu();
           return true;
         },
         async prime() {
@@ -938,6 +805,15 @@
             accessToken: !!state.accessToken,
             project: state.project
           };
+        },
+        setFile(fileId, fileName) {
+          const file = {
+            id: String(fileId || "").trim(),
+            name: ensureKofFileName(fileName || "")
+          };
+          state.selectedFile = file;
+          setInputsFromFile(file);
+          return file;
         }
       };
     } catch (err) {

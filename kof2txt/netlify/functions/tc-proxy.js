@@ -554,10 +554,26 @@ async function handleUploadConvertedTxt(body) {
   //   - Trimble svarer med { uploadUrl: "https://s3..." }
   // Steg 2: PUT til uploadUrl uten Authorization-header
   // ─────────────────────────────────────────────────────────────────────────
+  // Bygg multipart/form-data manuelt som Buffer — garantert å fungere i Node 18
   try {
-    const blob = new Blob([content], { type: "text/plain" });
-    const form = new FormData();
-    form.append("file", blob, normalizedFileName);
+    const boundary = "----TrimbleUploadBoundary" + Date.now();
+    const CRLF = "\r\n";
+
+    const partHeader = [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="file"; filename="${normalizedFileName}"`,
+      `Content-Type: text/plain`,
+      "",
+      ""
+    ].join(CRLF);
+
+    const partFooter = `${CRLF}--${boundary}--${CRLF}`;
+
+    const bodyBuffer = Buffer.concat([
+      Buffer.from(partHeader, "utf8"),
+      Buffer.from(content, "utf8"),
+      Buffer.from(partFooter, "utf8")
+    ]);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60000);
@@ -568,8 +584,12 @@ async function handleUploadConvertedTxt(body) {
         `${base}/files?parentId=${encodeURIComponent(parentId)}`,
         {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: form,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            "Content-Length": String(bodyBuffer.length)
+          },
+          body: bodyBuffer,
           signal: controller.signal
         }
       );

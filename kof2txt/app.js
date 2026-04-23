@@ -835,30 +835,6 @@
   }
 
 
-
-      setStatus("Kjører Core probe...");
-
-      const proxyRes = await callProxy("probeCore", {
-        token: state.accessToken,
-        projectId: state.project.id,
-        projectLocation: state.project.location,
-        fileId: file.id,
-        fileName: file.name
-      });
-
-      setStatus("Core probe ferdig");
-      setOutput(proxyRes.json || proxyRes.text);
-      return proxyRes.json || proxyRes.text;
-    } catch (err) {
-      console.error(err);
-      setStatus("Feil i probe");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
-    }
-  }
-
   function onWorkspaceEvent(event, args) {
     debug("[TC EVENT]", event, args);
 

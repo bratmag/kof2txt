@@ -42,7 +42,7 @@ exports.handler = async function handler(event) {
         status: res.status, ok: res.ok,
         contentType: res.headers.get("content-type"),
         headers: Object.fromEntries(res.headers.entries()),
-        body: text.slice(0, 5000)
+        body: text.slice(0, 50000)
       });
     }
 

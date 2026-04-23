@@ -333,6 +333,25 @@
     return api;
   }
 
+  async function ensureMenu() {
+    if (!state.api?.extension?.setMenu) {
+      debug("extension.setMenu finnes ikke.");
+      return;
+    }
+
+    try {
+      await state.api.extension.setMenu([
+        {
+          title: "Konverter KOF",
+          command: "open"
+        }
+      ]);
+      debug("Meny satt.");
+    } catch (err) {
+      console.error("Kunne ikke sette meny:", err);
+    }
+  }
+
   async function requestAccessToken() {
     if (state.accessToken) return state.accessToken;
 
@@ -858,6 +877,11 @@
       }
       return;
     }
+
+    if (event === "extension.command") {
+      debug("extension.command:", args);
+      return;
+    }
   }
 
   function wireUi() {
@@ -885,6 +909,7 @@
 
       setStatus("Starter...");
       await connectWorkspace();
+      await ensureMenu();
 
       setStatus("Klar. Trykk Oppdater liste.");
       setOutput({
@@ -904,6 +929,7 @@
           state.accessToken = null;
           state.project = null;
           await connectWorkspace();
+          await ensureMenu();
           return true;
         },
         async prime() {

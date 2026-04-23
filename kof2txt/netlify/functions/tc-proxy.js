@@ -534,59 +534,56 @@ async function handleListProjectKofFiles(body) {
 }
 
 async function handleUploadConvertedTxt(body) {
-  const {
-    token,
-    projectId,
-    projectLocation,
-    fileName,
-    content,
-    parentId = null
-  } = body;
+  const { token, projectId, projectLocation, fileName, content, parentId = null } = body;
 
   if (!token || !projectId || !fileName || typeof content !== "string") {
-    return jsonResponse(400, {
-      ok: false,
-      error: "Mangler input"
-    });
+    return jsonResponse(400, { ok: false, error: "Mangler token, projectId, fileName eller content" });
   }
-
   if (!parentId) {
-    return jsonResponse(400, {
-      ok: false,
-      error: "Mangler parentId"
-    });
+    return jsonResponse(400, { ok: false, error: "Mangler parentId" });
   }
 
   const base = getCoreBaseUrl(projectLocation);
   const normalizedFileName = normalizeUploadTarget(fileName);
   const diagnostics = [];
 
-  // ── Trimble Core API bruker multipart/form-data for filoppretting ──────────
-  // Steg 1: POST /files med multipart → får pre-signed S3 upload URL tilbake
-  // Steg 2: PUT til S3 URL med filinnholdet
-  // ──────────────────────────────────────────────────────────────────────────
+  // ── Trimble Core API opplastingsflyt ─────────────────────────────────────
+  // Steg 1: POST /files?parentId=X med multipart/form-data
+  //   - FormData skal ha ett "file"-felt med Blob-innhold og filnavn
+  //   - IKKE sett Content-Type manuelt (Node/fetch setter boundary automatisk)
+  //   - Trimble svarer med { uploadUrl: "https://s3..." }
+  // Steg 2: PUT til uploadUrl uten Authorization-header
+  // ─────────────────────────────────────────────────────────────────────────
   try {
-    // Bygg multipart/form-data manuelt (Node.js fetch støtter FormData)
-    const formData = new FormData();
-    formData.append("name", normalizedFileName);
-    formData.append("parentId", parentId);
+    const blob = new Blob([content], { type: "text/plain" });
+    const form = new FormData();
+    form.append("file", blob, normalizedFileName);
 
-    const createRes = await fetchWithBearer(
-      `${base}/files`,
-      token,
-      {
-        method: "POST",
-        // Ikke sett Content-Type — fetch setter boundary automatisk med FormData
-        body: formData
-      },
-      60000
-    );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60000);
+
+    let createRes;
+    try {
+      const res = await fetch(
+        `${base}/files?parentId=${encodeURIComponent(parentId)}`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+          signal: controller.signal
+        }
+      );
+      const text = await res.text();
+      createRes = { ok: res.ok, status: res.status, text, json: safeJsonParse(text) };
+    } finally {
+      clearTimeout(timer);
+    }
 
     const uploadUrl = extractPossibleUrl(createRes.json);
 
     diagnostics.push({
       step: "createFile-multipart",
-      url: `${base}/files`,
+      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
       ok: createRes.ok,
       status: createRes.status,
       foundUploadUrl: !!uploadUrl,
@@ -594,15 +591,14 @@ async function handleUploadConvertedTxt(body) {
     });
 
     if (createRes.ok && uploadUrl) {
-      // Steg 2: Last opp innholdet til pre-signed URL (uten auth-header)
       const uploadRes = await fetchRaw(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": "text/plain; charset=utf-8" },
         body: content
-      });
+      }, 60000);
 
       diagnostics.push({
-        step: "uploadToSignedUrl",
+        step: "uploadToS3",
         ok: uploadRes.ok,
         status: uploadRes.status,
         preview: shortText(uploadRes.text, 300)
@@ -628,7 +624,17 @@ async function handleUploadConvertedTxt(body) {
       });
     }
 
-    // Falt gjennom — prøv fallback med JSON (i tilfelle API endrer seg)
+    if (createRes.ok) {
+      return jsonResponse(200, {
+        ok: false,
+        action: "uploadConvertedTxt",
+        error: "Fil opprettet men ingen uploadUrl i svaret — se preview",
+        project: { id: projectId, location: projectLocation },
+        file: { name: normalizedFileName, parentId },
+        diagnostics
+      });
+    }
+
   } catch (err) {
     diagnostics.push({ step: "createFile-multipart", error: String(err) });
   }

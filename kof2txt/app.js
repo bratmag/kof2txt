@@ -335,27 +335,27 @@
   }
 
   async function ensureMenu() {
-    if (!state.api?.ui?.setMenu) {
-      debug("ui.setMenu finnes ikke.");
-      return false;
-    }
+  if (!state.api?.ui?.setMenu) {
+    debug("ui.setMenu finnes ikke.");
+    return false;
+  }
 
-    const mainMenuObject = {
-      title: "KOF2TXT",
-      icon: CONFIG.MENU_ICON_URL,
-      command: CONFIG.MENU_MAIN_COMMAND,
-      subMenus: [
-        {
-          title: "Konverter KOF",
-          command: CONFIG.MENU_OPEN_COMMAND
-        }
-      ]
-    };
+  const mainMenuObject = {
+    title: "KOF2TXT",
+    icon: `${window.location.origin}/icon.png`,
+    command: CONFIG.MENU_MAIN_COMMAND,
+    subMenus: [
+      {
+        title: "Konverter KOF",
+        command: CONFIG.MENU_OPEN_COMMAND
+      }
+    ]
+  };
 
-    await state.api.ui.setMenu(mainMenuObject);
-    await state.api.ui.setActiveMenuItem(CONFIG.MENU_OPEN_COMMAND).catch(() => {});
-    debug("Meny satt via ui.setMenu");
-    return true;
+  await state.api.ui.setMenu(mainMenuObject);
+  await state.api.ui.setActiveMenuItem(CONFIG.MENU_OPEN_COMMAND).catch(() => {});
+  debug("Meny satt via ui.setMenu");
+  return true;
   }
 
   async function requestAccessToken() {

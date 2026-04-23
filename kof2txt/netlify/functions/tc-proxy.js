@@ -22,6 +22,10 @@ exports.handler = async function handler(event) {
       return await handleListProjectKofFiles(body);
     }
 
+    if (action === "uploadConvertedTxt") {
+      return await handleUploadConvertedTxt(body);
+    }
+
     return jsonResponse(400, {
       ok: false,
       error: `Unknown action: ${String(action)}`
@@ -107,18 +111,34 @@ async function fetchRaw(url, options = {}, timeoutMs = 30000) {
       statusText: res.statusText,
       contentType,
       text,
-      json
+      json,
+      headers: Object.fromEntries(res.headers.entries())
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
+async function fetchWithBearer(url, token, options = {}, timeoutMs = 30000) {
+  const headers = {
+    ...(options.headers || {}),
+    Authorization: `Bearer ${token}`
+  };
+
+  return fetchRaw(
+    url,
+    {
+      ...options,
+      headers
+    },
+    timeoutMs
+  );
+}
+
 async function fetchJsonWithBearer(url, token, extraHeaders = {}) {
-  return fetchRaw(url, {
+  return fetchWithBearer(url, token, {
     method: "GET",
     headers: {
-      Authorization: `Bearer ${token}`,
       ...extraHeaders
     }
   });
@@ -132,6 +152,31 @@ async function fetchTextNoAuth(url) {
     },
     60000
   );
+}
+
+function extractPossibleUrl(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  return (
+    payload.uploadUrl ||
+    payload.url ||
+    payload.href ||
+    payload.link ||
+    payload.signedUrl ||
+    payload.presignedUrl ||
+    payload.data?.uploadUrl ||
+    payload.data?.url ||
+    payload.details?.uploadUrl ||
+    payload.details?.url ||
+    payload.result?.uploadUrl ||
+    payload.result?.url ||
+    null
+  );
+}
+
+function normalizeUploadTarget(fileName) {
+  const name = String(fileName || "").trim() || "output.txt";
+  return name.toLowerCase().endsWith(".txt") ? name : `${name}.txt`;
 }
 
 async function getFileMetadata({ token, projectLocation, fileId }) {
@@ -230,12 +275,7 @@ async function tryCoreCandidates({ token, projectLocation, fileId, versionId }) 
         ? await fetchJsonWithBearer(candidate.url, token)
         : await fetchRaw(candidate.url);
 
-      const signedUrl =
-        res.json?.url ||
-        res.json?.downloadUrl ||
-        res.json?.href ||
-        res.json?.link ||
-        null;
+      const signedUrl = extractPossibleUrl(res.json);
 
       const looksLikeText =
         typeof res.text === "string" &&
@@ -368,7 +408,8 @@ async function handleDownloadKofFile(body) {
       file: {
         id: metadata.data.id,
         versionId,
-        name: metadata.data.name || fileName
+        name: metadata.data.name || fileName,
+        parentId: metadata.data.parentId || null
       },
       metadata: {
         status: metadata.status,
@@ -392,7 +433,8 @@ async function handleDownloadKofFile(body) {
     file: {
       id: metadata.data.id,
       versionId,
-      name: metadata.data.name || fileName
+      name: metadata.data.name || fileName,
+      parentId: metadata.data.parentId || null
     },
     source: {
       candidate: download.source,
@@ -491,6 +533,195 @@ async function handleListProjectKofFiles(body) {
   return jsonResponse(200, listResult);
 }
 
+async function handleUploadConvertedTxt(body) {
+  const {
+    token,
+    projectId,
+    projectLocation,
+    fileName,
+    content,
+    parentId = null
+  } = body;
+
+  if (!token || !projectId || !fileName || typeof content !== "string") {
+    return jsonResponse(400, {
+      ok: false,
+      error: "Mangler token, projectId, fileName eller content"
+    });
+  }
+
+  const normalizedFileName = normalizeUploadTarget(fileName);
+  const base = getCoreBaseUrl(projectLocation);
+
+  const createCandidates = [
+    {
+      name: "post-files-root",
+      url: `${base}/files`,
+      body: {
+        name: normalizedFileName,
+        projectId,
+        parentId,
+        parentType: parentId ? "FOLDER" : undefined
+      }
+    },
+    {
+      name: "post-project-files",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/files`,
+      body: {
+        name: normalizedFileName,
+        parentId,
+        parentType: parentId ? "FOLDER" : undefined
+      }
+    },
+    {
+      name: "post-files-query-project",
+      url: `${base}/files?projectId=${encodeURIComponent(projectId)}`,
+      body: {
+        name: normalizedFileName,
+        parentId,
+        parentType: parentId ? "FOLDER" : undefined
+      }
+    }
+  ];
+
+  const diagnostics = [];
+
+  for (const candidate of createCandidates) {
+    try {
+      const bodyPayload = Object.fromEntries(
+        Object.entries(candidate.body).filter(([, v]) => v !== undefined && v !== null && v !== "")
+      );
+
+      const createRes = await fetchWithBearer(
+        candidate.url,
+        token,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(bodyPayload)
+        },
+        60000
+      );
+
+      const uploadUrl = extractPossibleUrl(createRes.json);
+      const createdFileId =
+        createRes.json?.id ||
+        createRes.json?.fileId ||
+        createRes.json?.details?.id ||
+        createRes.json?.data?.id ||
+        null;
+
+      diagnostics.push({
+        step: "create",
+        candidate: candidate.name,
+        url: candidate.url,
+        ok: createRes.ok,
+        status: createRes.status,
+        foundUploadUrl: !!uploadUrl,
+        createdFileId,
+        preview: shortText(createRes.text, 700)
+      });
+
+      if (!createRes.ok || !uploadUrl) {
+        continue;
+      }
+
+      const uploadAttempts = [
+        {
+          name: "put-text-plain",
+          options: {
+            method: "PUT",
+            headers: {
+              "Content-Type": "text/plain;charset=utf-8"
+            },
+            body: content
+          }
+        },
+        {
+          name: "put-octet-stream",
+          options: {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/octet-stream"
+            },
+            body: content
+          }
+        },
+        {
+          name: "post-text-plain",
+          options: {
+            method: "POST",
+            headers: {
+              "Content-Type": "text/plain;charset=utf-8"
+            },
+            body: content
+          }
+        }
+      ];
+
+      for (const uploadAttempt of uploadAttempts) {
+        const uploadRes = await fetchRaw(uploadUrl, uploadAttempt.options, 60000);
+
+        diagnostics.push({
+          step: "upload",
+          candidate: candidate.name,
+          attempt: uploadAttempt.name,
+          uploadUrlHost: safeHost(uploadUrl),
+          ok: uploadRes.ok,
+          status: uploadRes.status,
+          preview: shortText(uploadRes.text, 700)
+        });
+
+        if (uploadRes.ok) {
+          return jsonResponse(200, {
+            ok: true,
+            action: "uploadConvertedTxt",
+            project: {
+              id: projectId,
+              location: projectLocation
+            },
+            file: {
+              id: createdFileId,
+              name: normalizedFileName,
+              parentId
+            },
+            upload: {
+              createCandidate: candidate.name,
+              uploadAttempt: uploadAttempt.name,
+              uploadUrlHost: safeHost(uploadUrl)
+            },
+            diagnostics
+          });
+        }
+      }
+    } catch (err) {
+      diagnostics.push({
+        step: "exception",
+        ok: false,
+        candidate: candidate.name,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  return jsonResponse(200, {
+    ok: false,
+    action: "uploadConvertedTxt",
+    error: "Fant ingen fungerende upload-kandidat.",
+    project: {
+      id: projectId,
+      location: projectLocation
+    },
+    file: {
+      name: normalizedFileName,
+      parentId
+    },
+    diagnostics
+  });
+}
+
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {
   const base = getCoreBaseUrl(projectLocation);
 
@@ -583,6 +814,7 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
 function isKofName(name) {
   return /\.kof$/i.test(String(name || ""));
 }
+
 function normalizePathValue(pathValue) {
   if (!pathValue) return "";
 
@@ -608,6 +840,7 @@ function normalizePathValue(pathValue) {
 
   return String(pathValue);
 }
+
 function normalizeFilesFromAnyResponse(payload) {
   const out = [];
   const seen = new Set();
@@ -644,20 +877,63 @@ function walkAny(node, pathParts, out, seen) {
     node.versionId ||
     null;
 
+  const maybeParentId =
+    node.parentId ||
+    node.parent?.id ||
+    node.details?.parentId ||
+    null;
+
+  const maybeVersionId =
+    node.versionId ||
+    node.details?.versionId ||
+    null;
+
   const maybePath =
     node.path ||
     node.folderPath ||
     node.fullPath ||
     node.location ||
+    node.details?.path ||
     null;
 
-  const childPath = maybeName ? [...pathParts, maybeName] : pathParts;
+  const details = node.details && typeof node.details === "object" ? node.details : null;
 
-  if (maybeId && maybeName) {
+  const effectiveName =
+    maybeName ||
+    details?.name ||
+    details?.fileName ||
+    null;
+
+  const effectiveId =
+    maybeId ||
+    details?.id ||
+    details?.fileId ||
+    null;
+
+  const effectiveParentId =
+    maybeParentId ||
+    details?.parentId ||
+    null;
+
+  const effectiveVersionId =
+    maybeVersionId ||
+    details?.versionId ||
+    null;
+
+  const effectivePath =
+    maybePath ||
+    details?.path ||
+    null;
+
+  const childPath = effectiveName ? [...pathParts, effectiveName] : pathParts;
+
+  if (effectiveId && effectiveName) {
     const normalized = {
-      id: String(maybeId),
-      name: String(maybeName),
-      path: maybePath ? normalizePathValue(maybePath) : buildPath(pathParts)
+      id: String(effectiveId),
+      name: String(effectiveName),
+      versionId: effectiveVersionId ? String(effectiveVersionId) : null,
+      parentId: effectiveParentId ? String(effectiveParentId) : null,
+      path: effectivePath ? normalizePathValue(effectivePath) : buildPath(pathParts)
     };
 
     const key = `${normalized.id}|${normalized.name}|${normalized.path}`;

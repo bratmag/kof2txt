@@ -26,6 +26,26 @@ exports.handler = async function handler(event) {
       return await handleUploadConvertedTxt(body);
     }
 
+    if (action === "rawRequest") {
+      // Generisk HTTP-kall med valgfri metode, body og headers
+      const { token, url, rawBody, contentType, method: reqMethod = "GET" } = body;
+      const reqHeaders = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+      if (contentType) reqHeaders["Content-Type"] = contentType;
+      const fetchOpts = { method: reqMethod, headers: reqHeaders };
+      if (rawBody !== undefined && rawBody !== "" && reqMethod !== "GET" && reqMethod !== "HEAD") {
+        fetchOpts.body = rawBody;
+      }
+      const res = await fetch(url, fetchOpts);
+      const text = await res.text();
+      const allHeaders = Object.fromEntries(res.headers.entries());
+      return jsonResponse(200, {
+        status: res.status, ok: res.ok,
+        contentType: res.headers.get("content-type"),
+        headers: allHeaders,
+        body: text.slice(0, 5000)
+      });
+    }
+
     if (action === "rawPost") {
       const { token, url, rawBody, contentType } = body;
       const res = await fetch(url, {

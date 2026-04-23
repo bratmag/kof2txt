@@ -8,23 +8,23 @@ exports.handler = async function handler(event) {
     }
 
     const body = safeJsonParse(event.body) || {};
-    const { action } = body;
+const { action } = body;
 
-    if (action === "downloadKofFile") {
-      return await handleDownloadKofFile(body);
-    }
+if (action === "downloadKofFile") {
+  return await handleDownloadKofFile(body);
+}
 
-    if (action === "probeCore") {
-      return await handleProbeCore(body);
-    }
+if (action === "probeCore") {
+  return await handleProbeCore(body);
+}
 
-    if (action === "listProjectKofFiles") {
-      return await handleListProjectKofFiles(body);
-    }
+if (action === "listProjectKofFiles") {
+  return await handleListProjectKofFiles(body);
+}
 
-    if (action === "uploadConvertedTxt") {
-      return await handleUploadConvertedTxt(body);
-    }
+if (action === "uploadConvertedTxt") {
+  return await handleUploadConvertedTxt(body);
+}
 
     return jsonResponse(400, {
       ok: false,
@@ -550,39 +550,134 @@ async function handleUploadConvertedTxt(body) {
     });
   }
 
+  if (!parentId) {
+    return jsonResponse(400, {
+      ok: false,
+      error: "Mangler parentId for upload"
+    });
+  }
+
   const normalizedFileName = normalizeUploadTarget(fileName);
   const base = getCoreBaseUrl(projectLocation);
 
-  const createCandidates = [
-    {
-      name: "post-files-root",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        projectId,
-        parentId,
-        parentType: parentId ? "FOLDER" : undefined
-      }
-    },
-    {
-      name: "post-project-files",
-      url: `${base}/projects/${encodeURIComponent(projectId)}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        parentType: parentId ? "FOLDER" : undefined
-      }
-    },
-    {
-      name: "post-files-query-project",
-      url: `${base}/files?projectId=${encodeURIComponent(projectId)}`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        parentType: parentId ? "FOLDER" : undefined
-      }
+  // Dette er den viktigste endringen:
+  // direkte upload til /files?parentId=...
+  const uploadUrl = `${base}/files?parentId=${encodeURIComponent(parentId)}`;
+
+  const diagnostics = [];
+
+  try {
+    // Variant 1: multipart/form-data med "file"
+    const form = new FormData();
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    form.append("file", blob, normalizedFileName);
+
+    const multipartRes = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`
+      },
+      body: form
+    });
+
+    const multipartText = await multipartRes.text();
+    const multipartJson = safeJsonParse(multipartText);
+
+    diagnostics.push({
+      step: "multipartUpload",
+      url: uploadUrl,
+      ok: multipartRes.ok,
+      status: multipartRes.status,
+      preview: shortText(multipartText, 700)
+    });
+
+    if (multipartRes.ok) {
+      return jsonResponse(200, {
+        ok: true,
+        action: "uploadConvertedTxt",
+        project: {
+          id: projectId,
+          location: projectLocation
+        },
+        file: {
+          name: normalizedFileName,
+          parentId
+        },
+        uploadResult: multipartJson || multipartText,
+        diagnostics
+      });
     }
-  ];
+
+    // Variant 2: rå tekstbody
+    const rawRes = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "text/plain;charset=utf-8",
+        "X-File-Name": normalizedFileName
+      },
+      body: content
+    });
+
+    const rawText = await rawRes.text();
+    const rawJson = safeJsonParse(rawText);
+
+    diagnostics.push({
+      step: "rawUpload",
+      url: uploadUrl,
+      ok: rawRes.ok,
+      status: rawRes.status,
+      preview: shortText(rawText, 700)
+    });
+
+    if (rawRes.ok) {
+      return jsonResponse(200, {
+        ok: true,
+        action: "uploadConvertedTxt",
+        project: {
+          id: projectId,
+          location: projectLocation
+        },
+        file: {
+          name: normalizedFileName,
+          parentId
+        },
+        uploadResult: rawJson || rawText,
+        diagnostics
+      });
+    }
+
+    return jsonResponse(200, {
+      ok: false,
+      action: "uploadConvertedTxt",
+      error: "Direkte upload feilet.",
+      project: {
+        id: projectId,
+        location: projectLocation
+      },
+      file: {
+        name: normalizedFileName,
+        parentId
+      },
+      diagnostics
+    });
+  } catch (err) {
+    return jsonResponse(500, {
+      ok: false,
+      action: "uploadConvertedTxt",
+      error: err?.message || String(err),
+      project: {
+        id: projectId,
+        location: projectLocation
+      },
+      file: {
+        name: normalizedFileName,
+        parentId
+      },
+      diagnostics
+    });
+  }
+}
 
   const diagnostics = [];
 

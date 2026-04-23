@@ -8,23 +8,23 @@ exports.handler = async function handler(event) {
     }
 
     const body = safeJsonParse(event.body) || {};
-const { action } = body;
+    const { action } = body;
 
-if (action === "downloadKofFile") {
-  return await handleDownloadKofFile(body);
-}
+    if (action === "downloadKofFile") {
+      return await handleDownloadKofFile(body);
+    }
 
-if (action === "probeCore") {
-  return await handleProbeCore(body);
-}
+    if (action === "probeCore") {
+      return await handleProbeCore(body);
+    }
 
-if (action === "listProjectKofFiles") {
-  return await handleListProjectKofFiles(body);
-}
+    if (action === "listProjectKofFiles") {
+      return await handleListProjectKofFiles(body);
+    }
 
-if (action === "uploadConvertedTxt") {
-  return await handleUploadConvertedTxt(body);
-}
+    if (action === "uploadConvertedTxt") {
+      return await handleUploadConvertedTxt(body);
+    }
 
     return jsonResponse(400, {
       ok: false,
@@ -559,15 +559,11 @@ async function handleUploadConvertedTxt(body) {
 
   const normalizedFileName = normalizeUploadTarget(fileName);
   const base = getCoreBaseUrl(projectLocation);
-
-  // Dette er den viktigste endringen:
-  // direkte upload til /files?parentId=...
   const uploadUrl = `${base}/files?parentId=${encodeURIComponent(parentId)}`;
 
   const diagnostics = [];
 
   try {
-    // Variant 1: multipart/form-data med "file"
     const form = new FormData();
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
     form.append("file", blob, normalizedFileName);
@@ -608,7 +604,6 @@ async function handleUploadConvertedTxt(body) {
       });
     }
 
-    // Variant 2: rå tekstbody
     const rawRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {
@@ -677,144 +672,6 @@ async function handleUploadConvertedTxt(body) {
       diagnostics
     });
   }
-}
-
-  const diagnostics = [];
-
-  for (const candidate of createCandidates) {
-    try {
-      const bodyPayload = Object.fromEntries(
-        Object.entries(candidate.body).filter(([, v]) => v !== undefined && v !== null && v !== "")
-      );
-
-      const createRes = await fetchWithBearer(
-        candidate.url,
-        token,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(bodyPayload)
-        },
-        60000
-      );
-
-      const uploadUrl = extractPossibleUrl(createRes.json);
-      const createdFileId =
-        createRes.json?.id ||
-        createRes.json?.fileId ||
-        createRes.json?.details?.id ||
-        createRes.json?.data?.id ||
-        null;
-
-      diagnostics.push({
-        step: "create",
-        candidate: candidate.name,
-        url: candidate.url,
-        ok: createRes.ok,
-        status: createRes.status,
-        foundUploadUrl: !!uploadUrl,
-        createdFileId,
-        preview: shortText(createRes.text, 700)
-      });
-
-      if (!createRes.ok || !uploadUrl) {
-        continue;
-      }
-
-      const uploadAttempts = [
-        {
-          name: "put-text-plain",
-          options: {
-            method: "PUT",
-            headers: {
-              "Content-Type": "text/plain;charset=utf-8"
-            },
-            body: content
-          }
-        },
-        {
-          name: "put-octet-stream",
-          options: {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/octet-stream"
-            },
-            body: content
-          }
-        },
-        {
-          name: "post-text-plain",
-          options: {
-            method: "POST",
-            headers: {
-              "Content-Type": "text/plain;charset=utf-8"
-            },
-            body: content
-          }
-        }
-      ];
-
-      for (const uploadAttempt of uploadAttempts) {
-        const uploadRes = await fetchRaw(uploadUrl, uploadAttempt.options, 60000);
-
-        diagnostics.push({
-          step: "upload",
-          candidate: candidate.name,
-          attempt: uploadAttempt.name,
-          uploadUrlHost: safeHost(uploadUrl),
-          ok: uploadRes.ok,
-          status: uploadRes.status,
-          preview: shortText(uploadRes.text, 700)
-        });
-
-        if (uploadRes.ok) {
-          return jsonResponse(200, {
-            ok: true,
-            action: "uploadConvertedTxt",
-            project: {
-              id: projectId,
-              location: projectLocation
-            },
-            file: {
-              id: createdFileId,
-              name: normalizedFileName,
-              parentId
-            },
-            upload: {
-              createCandidate: candidate.name,
-              uploadAttempt: uploadAttempt.name,
-              uploadUrlHost: safeHost(uploadUrl)
-            },
-            diagnostics
-          });
-        }
-      }
-    } catch (err) {
-      diagnostics.push({
-        step: "exception",
-        ok: false,
-        candidate: candidate.name,
-        error: err?.message || String(err)
-      });
-    }
-  }
-
-  return jsonResponse(200, {
-    ok: false,
-    action: "uploadConvertedTxt",
-    error: "Fant ingen fungerende upload-kandidat.",
-    project: {
-      id: projectId,
-      location: projectLocation
-    },
-    file: {
-      name: normalizedFileName,
-      parentId
-    },
-    diagnostics
-  });
 }
 
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {

@@ -546,164 +546,53 @@ async function handleUploadConvertedTxt(body) {
   if (!token || !projectId || !fileName || typeof content !== "string") {
     return jsonResponse(400, {
       ok: false,
-      error: "Mangler input"
+      error: "Mangler token, projectId, fileName eller content"
     });
   }
 
   if (!parentId) {
     return jsonResponse(400, {
       ok: false,
-      error: "Mangler parentId"
+      error: "Mangler parentId for upload"
     });
   }
 
-  const base = getCoreBaseUrl(projectLocation);
   const normalizedFileName = normalizeUploadTarget(fileName);
+  const base = getCoreBaseUrl(projectLocation);
+  const uploadUrl = `${base}/files?parentId=${encodeURIComponent(parentId)}`;
   const diagnostics = [];
 
-  const createCandidates = [
-    {
-      name: "files-name-parent-project",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        projectId
-      }
-    },
-    {
-      name: "files-filename-parent-project",
-      url: `${base}/files`,
-      body: {
-        fileName: normalizedFileName,
-        parentId,
-        projectId
-      }
-    },
-    {
-      name: "files-name-parent-parentType-project",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        parentType: "FOLDER",
-        projectId
-      }
-    },
-    {
-      name: "files-name-parent-parentType",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        parentType: "FOLDER"
-      }
-    },
-    {
-      name: "files-details-wrapper",
-      url: `${base}/files`,
-      body: {
-        details: {
-          name: normalizedFileName,
-          parentId,
-          projectId
-        }
-      }
-    },
-    {
-      name: "files-type-details-wrapper",
-      url: `${base}/files`,
-      body: {
-        type: "FILE",
-        details: {
-          name: normalizedFileName,
-          parentId,
-          projectId
-        }
-      }
-    },
-    {
-      name: "files-query-parent-body-name-project",
-      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-      body: {
-        name: normalizedFileName,
-        projectId
-      }
-    },
-    {
-      name: "files-query-parent-body-filename-project",
-      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-      body: {
-        fileName: normalizedFileName,
-        projectId
-      }
-    }
-  ];
+  try {
+    // Bruk faktisk File-objekt i multipart
+    const file = new File(
+      [Buffer.from(content, "utf8")],
+      normalizedFileName,
+      { type: "text/plain" }
+    );
 
-  for (const candidate of createCandidates) {
-    try {
-      const createRes = await fetchWithBearer(
-        candidate.url,
-        token,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(candidate.body)
-        },
-        60000
-      );
+    const form = new FormData();
+    form.append("file", file);
 
-      const uploadUrl = extractPossibleUrl(createRes.json);
+    const multipartRes = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`
+      },
+      body: form
+    });
 
-      diagnostics.push({
-        step: "createFile",
-        candidate: candidate.name,
-        url: candidate.url,
-        ok: createRes.ok,
-        status: createRes.status,
-        foundUploadUrl: !!uploadUrl,
-        preview: shortText(createRes.text, 700)
-      });
+    const multipartText = await multipartRes.text();
+    const multipartJson = safeJsonParse(multipartText);
 
-      if (!createRes.ok || !uploadUrl) {
-        continue;
-      }
+    diagnostics.push({
+      step: "multipartFileUpload",
+      url: uploadUrl,
+      ok: multipartRes.ok,
+      status: multipartRes.status,
+      preview: shortText(multipartText, 700)
+    });
 
-      const uploadRes = await fetchRaw(uploadUrl, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/octet-stream"
-        },
-        body: content
-      });
-
-      diagnostics.push({
-        step: "uploadToSignedUrl",
-        candidate: candidate.name,
-        ok: uploadRes.ok,
-        status: uploadRes.status,
-        preview: shortText(uploadRes.text, 700)
-      });
-
-      if (!uploadRes.ok) {
-        return jsonResponse(200, {
-          ok: false,
-          action: "uploadConvertedTxt",
-          error: "Upload til signed URL feilet",
-          project: {
-            id: projectId,
-            location: projectLocation
-          },
-          file: {
-            name: normalizedFileName,
-            parentId
-          },
-          diagnostics
-        });
-      }
-
+    if (multipartRes.ok) {
       return jsonResponse(200, {
         ok: true,
         action: "uploadConvertedTxt",
@@ -715,32 +604,41 @@ async function handleUploadConvertedTxt(body) {
           name: normalizedFileName,
           parentId
         },
+        uploadResult: multipartJson || multipartText,
         diagnostics
       });
-    } catch (err) {
-      diagnostics.push({
-        step: "exception",
-        candidate: candidate.name,
-        ok: false,
-        error: err?.message || String(err)
-      });
     }
-  }
 
-  return jsonResponse(200, {
-    ok: false,
-    action: "uploadConvertedTxt",
-    error: "Fikk ikke uploadUrl",
-    project: {
-      id: projectId,
-      location: projectLocation
-    },
-    file: {
-      name: normalizedFileName,
-      parentId
-    },
-    diagnostics
-  });
+    return jsonResponse(200, {
+      ok: false,
+      action: "uploadConvertedTxt",
+      error: "Multipart fil-upload feilet.",
+      project: {
+        id: projectId,
+        location: projectLocation
+      },
+      file: {
+        name: normalizedFileName,
+        parentId
+      },
+      diagnostics
+    });
+  } catch (err) {
+    return jsonResponse(500, {
+      ok: false,
+      action: "uploadConvertedTxt",
+      error: err?.message || String(err),
+      project: {
+        id: projectId,
+        location: projectLocation
+      },
+      file: {
+        name: normalizedFileName,
+        parentId
+      },
+      diagnostics
+    });
+  }
 }
 
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {

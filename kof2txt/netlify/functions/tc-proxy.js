@@ -547,70 +547,83 @@ async function handleUploadConvertedTxt(body) {
   const normalizedFileName = normalizeUploadTarget(fileName);
   const diagnostics = [];
 
-  // ── Trimble Core API opplastingsflyt ─────────────────────────────────────
-  // Steg 1: POST /files?parentId=X med multipart/form-data
-  //   - FormData skal ha ett "file"-felt med Blob-innhold og filnavn
-  //   - IKKE sett Content-Type manuelt (Node/fetch setter boundary automatisk)
-  //   - Trimble svarer med { uploadUrl: "https://s3..." }
-  // Steg 2: PUT til uploadUrl uten Authorization-header
+  // ── Trimble Core API filopplastingsflyt ───────────────────────────────────
+  //
+  // Riktig flyt er to-stegs via /files/fs/ (file storage):
+  //
+  //   Steg 1: POST /files/fs/{parentId}/uploadurl?name={filnavn}
+  //           → Trimble svarer med { uploadUrl: "https://s3..." }
+  //
+  //   Steg 2: PUT til S3 URL med filinnhold (uten Authorization-header)
+  //
+  // Merk: POST /files er for METADATA, ikke for selve filopplastingen.
   // ─────────────────────────────────────────────────────────────────────────
-  // Bygg multipart/form-data manuelt som Buffer — garantert å fungere i Node 18
-  try {
-    const boundary = "----TrimbleUploadBoundary" + Date.now();
-    const CRLF = "\r\n";
 
-    const partHeader = [
-      `--${boundary}`,
-      `Content-Disposition: form-data; name="file"; filename="${normalizedFileName}"`,
-      `Content-Type: text/plain`,
-      "",
-      ""
-    ].join(CRLF);
-
-    const partFooter = `${CRLF}--${boundary}--${CRLF}`;
-
-    const bodyBuffer = Buffer.concat([
-      Buffer.from(partHeader, "utf8"),
-      Buffer.from(content, "utf8"),
-      Buffer.from(partFooter, "utf8")
-    ]);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60000);
-
-    let createRes;
-    try {
-      const res = await fetch(
-        `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": `multipart/form-data; boundary=${boundary}`,
-            "Content-Length": String(bodyBuffer.length)
-          },
-          body: bodyBuffer,
-          signal: controller.signal
-        }
-      );
-      const text = await res.text();
-      createRes = { ok: res.ok, status: res.status, text, json: safeJsonParse(text) };
-    } finally {
-      clearTimeout(timer);
+  const uploadCandidates = [
+    {
+      name: "fs-parent-uploadurl-name-query",
+      url: `${base}/files/fs/${encodeURIComponent(parentId)}/uploadurl?name=${encodeURIComponent(normalizedFileName)}`,
+      body: {}
+    },
+    {
+      name: "fs-uploadurl-parent-name-query",
+      url: `${base}/files/fs/uploadurl?parentId=${encodeURIComponent(parentId)}&name=${encodeURIComponent(normalizedFileName)}`,
+      body: {}
+    },
+    {
+      name: "fs-parent-upload-filename-query",
+      url: `${base}/files/fs/${encodeURIComponent(parentId)}/upload?fileName=${encodeURIComponent(normalizedFileName)}`,
+      body: {}
+    },
+    {
+      name: "files-post-json-name-parent",
+      url: `${base}/files`,
+      body: { name: normalizedFileName, parentId }
+    },
+    {
+      name: "files-post-json-name-parent-project",
+      url: `${base}/files`,
+      body: { name: normalizedFileName, parentId, projectId }
+    },
+    {
+      name: "files-post-json-parentType",
+      url: `${base}/files`,
+      body: { name: normalizedFileName, parentId, parentType: "FOLDER", projectId }
+    },
+    {
+      name: "folders-parent-files",
+      url: `${base}/folders/${encodeURIComponent(parentId)}/files`,
+      body: { name: normalizedFileName }
     }
+  ];
 
-    const uploadUrl = extractPossibleUrl(createRes.json);
+  for (const candidate of uploadCandidates) {
+    try {
+      const reqBody = Object.keys(candidate.body).length > 0
+        ? JSON.stringify(candidate.body)
+        : "{}";
 
-    diagnostics.push({
-      step: "createFile-multipart",
-      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-      ok: createRes.ok,
-      status: createRes.status,
-      foundUploadUrl: !!uploadUrl,
-      preview: shortText(createRes.text, 700)
-    });
+      const createRes = await fetchWithBearer(
+        candidate.url, token,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody },
+        30000
+      );
 
-    if (createRes.ok && uploadUrl) {
+      const uploadUrl = extractPossibleUrl(createRes.json);
+
+      diagnostics.push({
+        step: "getUploadUrl",
+        candidate: candidate.name,
+        url: candidate.url,
+        ok: createRes.ok,
+        status: createRes.status,
+        foundUploadUrl: !!uploadUrl,
+        preview: shortText(createRes.text, 500)
+      });
+
+      if (!createRes.ok || !uploadUrl) continue;
+
+      // Steg 2: PUT til S3 URL uten auth-header
       const uploadRes = await fetchRaw(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -619,6 +632,7 @@ async function handleUploadConvertedTxt(body) {
 
       diagnostics.push({
         step: "uploadToS3",
+        candidate: candidate.name,
         ok: uploadRes.ok,
         status: uploadRes.status,
         preview: shortText(uploadRes.text, 300)
@@ -637,208 +651,23 @@ async function handleUploadConvertedTxt(body) {
       return jsonResponse(200, {
         ok: false,
         action: "uploadConvertedTxt",
-        error: "Upload til S3 feilet",
+        error: "Fikk uploadUrl men S3-upload feilet",
         project: { id: projectId, location: projectLocation },
         file: { name: normalizedFileName, parentId },
         diagnostics
       });
-    }
 
-    if (createRes.ok) {
-      return jsonResponse(200, {
-        ok: false,
-        action: "uploadConvertedTxt",
-        error: "Fil opprettet men ingen uploadUrl i svaret — se preview",
-        project: { id: projectId, location: projectLocation },
-        file: { name: normalizedFileName, parentId },
-        diagnostics
-      });
-    }
-
-  } catch (err) {
-    diagnostics.push({ step: "createFile-multipart", error: String(err) });
-  }
-
-  // ── Fallback: prøv med JSON body i ulike varianter ────────────────────────
-
-  const createCandidates = [
-    {
-      name: "files-name-parent-project",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        projectId
-      }
-    },
-    {
-      name: "files-filename-parent-project",
-      url: `${base}/files`,
-      body: {
-        fileName: normalizedFileName,
-        parentId,
-        projectId
-      }
-    },
-    {
-      name: "files-name-parent-parentType-project",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        parentType: "FOLDER",
-        projectId
-      }
-    },
-    {
-      name: "files-name-parent-parentType",
-      url: `${base}/files`,
-      body: {
-        name: normalizedFileName,
-        parentId,
-        parentType: "FOLDER"
-      }
-    },
-    {
-      name: "files-details-wrapper",
-      url: `${base}/files`,
-      body: {
-        details: {
-          name: normalizedFileName,
-          parentId,
-          projectId
-        }
-      }
-    },
-    {
-      name: "files-type-details-wrapper",
-      url: `${base}/files`,
-      body: {
-        type: "FILE",
-        details: {
-          name: normalizedFileName,
-          parentId,
-          projectId
-        }
-      }
-    },
-    {
-      name: "files-query-parent-body-name-project",
-      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-      body: {
-        name: normalizedFileName,
-        projectId
-      }
-    },
-    {
-      name: "files-query-parent-body-filename-project",
-      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
-      body: {
-        fileName: normalizedFileName,
-        projectId
-      }
-    }
-  ];
-
-  for (const candidate of createCandidates) {
-    try {
-      const createRes = await fetchWithBearer(
-        candidate.url,
-        token,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(candidate.body)
-        },
-        60000
-      );
-
-      const uploadUrl = extractPossibleUrl(createRes.json);
-
-      diagnostics.push({
-        step: "createFile",
-        candidate: candidate.name,
-        url: candidate.url,
-        ok: createRes.ok,
-        status: createRes.status,
-        foundUploadUrl: !!uploadUrl,
-        preview: shortText(createRes.text, 700)
-      });
-
-      if (!createRes.ok || !uploadUrl) {
-        continue;
-      }
-
-      const uploadRes = await fetchRaw(uploadUrl, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/octet-stream"
-        },
-        body: content
-      });
-
-      diagnostics.push({
-        step: "uploadToSignedUrl",
-        candidate: candidate.name,
-        ok: uploadRes.ok,
-        status: uploadRes.status,
-        preview: shortText(uploadRes.text, 700)
-      });
-
-      if (!uploadRes.ok) {
-        return jsonResponse(200, {
-          ok: false,
-          action: "uploadConvertedTxt",
-          error: "Upload til signed URL feilet",
-          project: {
-            id: projectId,
-            location: projectLocation
-          },
-          file: {
-            name: normalizedFileName,
-            parentId
-          },
-          diagnostics
-        });
-      }
-
-      return jsonResponse(200, {
-        ok: true,
-        action: "uploadConvertedTxt",
-        project: {
-          id: projectId,
-          location: projectLocation
-        },
-        file: {
-          name: normalizedFileName,
-          parentId
-        },
-        diagnostics
-      });
     } catch (err) {
-      diagnostics.push({
-        step: "exception",
-        candidate: candidate.name,
-        ok: false,
-        error: err?.message || String(err)
-      });
+      diagnostics.push({ step: "getUploadUrl", candidate: candidate.name, url: candidate.url, error: String(err) });
     }
   }
 
   return jsonResponse(200, {
     ok: false,
     action: "uploadConvertedTxt",
-    error: "Fikk ikke uploadUrl",
-    project: {
-      id: projectId,
-      location: projectLocation
-    },
-    file: {
-      name: normalizedFileName,
-      parentId
-    },
+    error: "Ingen kandidater returnerte en upload URL",
+    project: { id: projectId, location: projectLocation },
+    file: { name: normalizedFileName, parentId },
     diagnostics
   });
 }

@@ -26,6 +26,25 @@ exports.handler = async function handler(event) {
       return await handleUploadConvertedTxt(body);
     }
 
+    if (action === "rawPost") {
+      const { token, url, rawBody, contentType } = body;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": contentType || "application/json",
+          Accept: "application/json"
+        },
+        body: rawBody
+      });
+      const text = await res.text();
+      return jsonResponse(200, {
+        status: res.status, ok: res.ok,
+        contentType: res.headers.get("content-type"),
+        body: text.slice(0, 2000)
+      });
+    }
+
     return jsonResponse(400, {
       ok: false,
       error: `Unknown action: ${String(action)}`

@@ -121,10 +121,7 @@
     if (ui.fileIdInput) ui.fileIdInput.value = file.id || "";
     if (ui.fileNameInput) ui.fileNameInput.value = file.name || "";
   }
-function clearInputs() {
-  if (ui.fileIdInput) ui.fileIdInput.value = "";
-  if (ui.fileNameInput) ui.fileNameInput.value = "";
-}
+
   function resolveTokenWaiters(token) {
     const waiters = [...state.tokenWaiters];
     state.tokenWaiters = [];
@@ -172,7 +169,7 @@ function clearInputs() {
 
     const intro = document.createElement("div");
     intro.className = "muted";
-    intro.textContent = "Velg en .kof-fil i Trimble Connect, eller skriv inn File ID manuelt.";
+    intro.textContent = "Skriv inn File ID manuelt og trykk Konverter KOF.";
 
     titleCard.appendChild(title);
     titleCard.appendChild(intro);
@@ -702,61 +699,18 @@ function tryParseFreePointLine(line) {
   }
 
   function onWorkspaceEvent(event, args) {
-  debug("[TC EVENT]", event, args);
+    debug("[TC EVENT]", event, args);
 
-  if (event === "extension.accessToken") {
-    const token = args?.data;
-    if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
-      state.accessToken = token;
-      resolveTokenWaiters(token);
-      debug("Access token mottatt via event.");
-    }
-    return;
-  }
-
-  if (event === "extension.fileSelected") {
-    const file =
-      args?.data?.file ||
-      args?.file ||
-      args?.data ||
-      null;
-
-    debug("fileSelected kandidat:", file);
-
-    if (!file || !file.id) {
-      setStatus("Ingen fil valgt");
+    if (event === "extension.accessToken") {
+      const token = args?.data;
+      if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
+        state.accessToken = token;
+        resolveTokenWaiters(token);
+        debug("Access token mottatt via event.");
+      }
       return;
     }
-
-    const picked = {
-      id: String(file.id || "").trim(),
-      name: ensureKofFileName(file.name || "")
-    };
-
-    state.selectedFile = picked;
-    setInputsFromFile(picked);
-
-    if (isKofFileName(picked.name)) {
-      setStatus(`KOF-fil valgt automatisk: ${picked.name}`);
-      setOutput({
-        ok: true,
-        source: "extension.fileSelected",
-        message: "Valgt .kof-fil ble autodetektert.",
-        file: picked
-      });
-    } else {
-      setStatus(`Fil valgt, men ikke .kof: ${picked.name}`);
-      setOutput({
-        ok: false,
-        source: "extension.fileSelected",
-        message: "Valgt fil er ikke en .kof-fil.",
-        file: picked
-      });
-    }
-
-    return;
   }
-}
 
   function wireUi() {
     ui.convertBtn.addEventListener("click", () => {

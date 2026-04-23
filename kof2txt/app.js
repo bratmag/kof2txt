@@ -185,13 +185,10 @@
     const convertAllBtn = document.createElement("button");
     convertAllBtn.textContent = "Konverter alle";
 
-    const probeBtn = document.createElement("button");
-    probeBtn.textContent = "Core probe valgt";
 
     btnRow.appendChild(refreshBtn);
     btnRow.appendChild(convertSelectedBtn);
     btnRow.appendChild(convertAllBtn);
-    btnRow.appendChild(probeBtn);
 
     const selectedInfo = document.createElement("div");
     selectedInfo.className = "muted";
@@ -238,7 +235,6 @@
       refreshBtn,
       convertSelectedBtn,
       convertAllBtn,
-      probeBtn,
       selectedInfo,
       fileList,
       status: statusBox,
@@ -838,19 +834,7 @@
     }
   }
 
-  async function runCoreProbe() {
-    try {
-      await ensureReady();
 
-      const file = state.selectedFile;
-      if (!file?.id) {
-        setOutput({
-          ok: false,
-          step: "probeNoFile",
-          message: "Velg en fil først."
-        });
-        return;
-      }
 
       setStatus("Kjører Core probe...");
 
@@ -913,9 +897,6 @@
       processAllFiles();
     });
 
-    ui.probeBtn.addEventListener("click", () => {
-      runCoreProbe();
-    });
   }
 
   async function init() {

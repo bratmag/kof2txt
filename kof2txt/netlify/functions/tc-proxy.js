@@ -559,89 +559,188 @@ async function handleUploadConvertedTxt(body) {
 
   const base = getCoreBaseUrl(projectLocation);
   const normalizedFileName = normalizeUploadTarget(fileName);
-
   const diagnostics = [];
 
-  try {
-    // 🔹 STEP 1: Opprett fil og få uploadUrl
-    const createRes = await fetchWithBearer(
-      `${base}/files`,
-      token,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          name: normalizedFileName,
-          parentId: parentId,
-          projectId: projectId
-        })
-      }
-    );
-
-    diagnostics.push({
-      step: "createFile",
-      ok: createRes.ok,
-      status: createRes.status,
-      preview: shortText(createRes.text, 700)
-    });
-
-    const uploadUrl = extractPossibleUrl(createRes.json);
-
-    if (!createRes.ok || !uploadUrl) {
-      return jsonResponse(200, {
-        ok: false,
-        error: "Fikk ikke uploadUrl",
-        diagnostics
-      });
-    }
-
-    // 🔹 STEP 2: Last opp til signed URL
-    const uploadRes = await fetchRaw(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/octet-stream"
-      },
-      body: content
-    });
-
-    diagnostics.push({
-      step: "uploadToSignedUrl",
-      ok: uploadRes.ok,
-      status: uploadRes.status,
-      preview: shortText(uploadRes.text, 700)
-    });
-
-    if (!uploadRes.ok) {
-      return jsonResponse(200, {
-        ok: false,
-        error: "Upload til signed URL feilet",
-        diagnostics
-      });
-    }
-
-    return jsonResponse(200, {
-      ok: true,
-      action: "uploadConvertedTxt",
-      project: {
-        id: projectId,
-        location: projectLocation
-      },
-      file: {
+  const createCandidates = [
+    {
+      name: "files-name-parent-project",
+      url: `${base}/files`,
+      body: {
         name: normalizedFileName,
-        parentId
-      },
-      diagnostics
-    });
+        parentId,
+        projectId
+      }
+    },
+    {
+      name: "files-filename-parent-project",
+      url: `${base}/files`,
+      body: {
+        fileName: normalizedFileName,
+        parentId,
+        projectId
+      }
+    },
+    {
+      name: "files-name-parent-parentType-project",
+      url: `${base}/files`,
+      body: {
+        name: normalizedFileName,
+        parentId,
+        parentType: "FOLDER",
+        projectId
+      }
+    },
+    {
+      name: "files-name-parent-parentType",
+      url: `${base}/files`,
+      body: {
+        name: normalizedFileName,
+        parentId,
+        parentType: "FOLDER"
+      }
+    },
+    {
+      name: "files-details-wrapper",
+      url: `${base}/files`,
+      body: {
+        details: {
+          name: normalizedFileName,
+          parentId,
+          projectId
+        }
+      }
+    },
+    {
+      name: "files-type-details-wrapper",
+      url: `${base}/files`,
+      body: {
+        type: "FILE",
+        details: {
+          name: normalizedFileName,
+          parentId,
+          projectId
+        }
+      }
+    },
+    {
+      name: "files-query-parent-body-name-project",
+      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
+      body: {
+        name: normalizedFileName,
+        projectId
+      }
+    },
+    {
+      name: "files-query-parent-body-filename-project",
+      url: `${base}/files?parentId=${encodeURIComponent(parentId)}`,
+      body: {
+        fileName: normalizedFileName,
+        projectId
+      }
+    }
+  ];
 
-  } catch (err) {
-    return jsonResponse(500, {
-      ok: false,
-      error: err?.message || String(err),
-      diagnostics
-    });
+  for (const candidate of createCandidates) {
+    try {
+      const createRes = await fetchWithBearer(
+        candidate.url,
+        token,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(candidate.body)
+        },
+        60000
+      );
+
+      const uploadUrl = extractPossibleUrl(createRes.json);
+
+      diagnostics.push({
+        step: "createFile",
+        candidate: candidate.name,
+        url: candidate.url,
+        ok: createRes.ok,
+        status: createRes.status,
+        foundUploadUrl: !!uploadUrl,
+        preview: shortText(createRes.text, 700)
+      });
+
+      if (!createRes.ok || !uploadUrl) {
+        continue;
+      }
+
+      const uploadRes = await fetchRaw(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream"
+        },
+        body: content
+      });
+
+      diagnostics.push({
+        step: "uploadToSignedUrl",
+        candidate: candidate.name,
+        ok: uploadRes.ok,
+        status: uploadRes.status,
+        preview: shortText(uploadRes.text, 700)
+      });
+
+      if (!uploadRes.ok) {
+        return jsonResponse(200, {
+          ok: false,
+          action: "uploadConvertedTxt",
+          error: "Upload til signed URL feilet",
+          project: {
+            id: projectId,
+            location: projectLocation
+          },
+          file: {
+            name: normalizedFileName,
+            parentId
+          },
+          diagnostics
+        });
+      }
+
+      return jsonResponse(200, {
+        ok: true,
+        action: "uploadConvertedTxt",
+        project: {
+          id: projectId,
+          location: projectLocation
+        },
+        file: {
+          name: normalizedFileName,
+          parentId
+        },
+        diagnostics
+      });
+    } catch (err) {
+      diagnostics.push({
+        step: "exception",
+        candidate: candidate.name,
+        ok: false,
+        error: err?.message || String(err)
+      });
+    }
   }
+
+  return jsonResponse(200, {
+    ok: false,
+    action: "uploadConvertedTxt",
+    error: "Fikk ikke uploadUrl",
+    project: {
+      id: projectId,
+      location: projectLocation
+    },
+    file: {
+      name: normalizedFileName,
+      parentId
+    },
+    diagnostics
+  });
 }
 
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {

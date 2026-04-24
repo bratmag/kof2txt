@@ -102,20 +102,17 @@
     if (!app) throw new Error("Fant ikke #app i index.html");
     app.innerHTML = "";
 
-    // Header card
     const titleCard = el("div", "card");
     titleCard.appendChild(el("div", "card-header", [
       el("h2", null, "KOF2TXT")
     ]));
     titleCard.appendChild(el("div", "subtitle", "Konverter .kof-filer til tekstformat"));
 
-    // Project card
     const projectCard = el("div", "card");
     projectCard.appendChild(el("div", "label", "Prosjekt"));
     const projectValue = el("div", "project-value", "Venter på tilkobling...");
     projectCard.appendChild(projectValue);
 
-    // Files card
     const filesCard = el("div", "card");
 
     const filesHeader = el("div", "card-header", [
@@ -142,7 +139,6 @@
     fileList.id = "fileList";
     filesCard.appendChild(fileList);
 
-    // Status card
     const statusCard = el("div", "card");
     const status = el("div", "status", "Starter...");
     status.id = "statusBox";
@@ -153,7 +149,6 @@
     hint.id = "hintBox";
     statusCard.appendChild(hint);
 
-    // Debug (skjult som standard)
     const debugDetails = el("details", "debug");
     const debugSummary = el("summary", null, "Vis tekniske detaljer");
     debugDetails.appendChild(debugSummary);
@@ -412,10 +407,27 @@
 
   function tryParseFreePointLine(line) {
     const s = String(line || "").trim();
-    let m = s.match(/^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
+
+    // KOF 05-variant: 05 Punktnavn Kode Nord Øst Høyde
+    // Eksempel: 05 p1 4051 6694974.582 297294.438 36.131
+    // Her ignorerer vi kodefeltet, fordi TXT-formatet bare skal ha punktnavn,nord,øst,høyde.
+    let m = s.match(/^05\s+([^\s]+)\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
+    if (m) return { name: m[1], north: parseNumber(m[3]), east: parseNumber(m[4]), height: parseNumber(m[5]) };
+
+    // KOF 05-variant: 05 Punktnavn Nord Øst Høyde
+    // Eksempel: 05 11 6643083.229 592220.933 10.000
+    m = s.match(/^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: parseNumber(m[4]) };
+
+    // KOF 05-variant: 05 Punktnavn Nord Øst, uten høyde
+    // Eksempel: 05 G1 6627190.530 620539.580
+    m = s.match(/^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
+    if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: null };
+
+    // Generisk variant uten 05: Punktnavn Nord Øst Høyde
     m = s.match(/^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: parseNumber(m[4]) };
+
     return null;
   }
 
@@ -428,6 +440,7 @@
       height: p.height != null ? Number(p.height) : null
     };
   }
+
   function dedupePoints(points) {
     const seen = new Set();
     const out = [];
@@ -439,30 +452,37 @@
     }
     return out;
   }
+
   function normalizeKey(key) {
     return String(key || "").trim().toLowerCase()
       .replace(/[æøå]/g, (c) => ({ "æ": "ae", "ø": "o", "å": "a" }[c]))
       .replace(/[^a-z0-9]/g, "");
   }
+
   function cleanValue(value) { return String(value || "").trim().replace(/^"|"$/g, ""); }
+
   function parseNumber(value) {
     if (value == null) return null;
     const s = String(value).trim().replace(/\s+/g, "").replace(",", ".");
     const n = Number(s);
     return Number.isFinite(n) ? n : null;
   }
+
   function formatNumberForTxt(n) {
     if (n == null || !Number.isFinite(n)) return "";
     return String(n);
   }
+
   function csvEscape(value) {
     const s = String(value ?? "");
     if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   }
+
   function isNameKey(key) {
     return ["punktnavn", "punktnummer", "punktnr", "punktid", "punkt", "navn", "name", "id", "label"].includes(key);
   }
+
   function isNorthKey(key) { return ["n", "nord", "north", "northing", "y"].includes(key); }
   function isEastKey(key) { return ["e", "ost", "east", "easting", "x"].includes(key); }
   function isHeightKey(key) { return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key); }
@@ -662,7 +682,6 @@
 
       setStatus("Klar — trykk \"Oppdater liste\" for å se KOF-filer", "neutral");
 
-      // Eksponerer for console-debugging
       window.kof2txt = {
         state,
         refreshKofList,

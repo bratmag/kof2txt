@@ -48,11 +48,48 @@ function safeHost(url) {
   try { return new URL(url).host; } catch { return null; }
 }
 
+// Cache for region discovery
+let _regionCache = null;
+
+async function discoverRegions() {
+  if (_regionCache) return _regionCache;
+  try {
+    const res = await fetch("https://app.connect.trimble.com/tc/api/2.0/regions");
+    if (res.ok) {
+      const data = await res.json();
+      _regionCache = data;
+      return data;
+    }
+  } catch {}
+  return null;
+}
+
 function getCoreBaseUrl(projectLocation) {
   const loc = String(projectLocation || "").toLowerCase();
   if (loc === "europe") return "https://app.eu.connect.trimble.com/tc/api/2.0";
   if (loc === "asia") return "https://app.asia.connect.trimble.com/tc/api/2.0";
   return "https://app.connect.trimble.com/tc/api/2.0";
+}
+
+async function getCoreBaseUrlAsync(projectLocation) {
+  const loc = String(projectLocation || "").toLowerCase();
+  // Prøv region discovery først
+  const regions = await discoverRegions();
+  if (regions && Array.isArray(regions)) {
+    const match = regions.find((r) => {
+      const id = String(r.id || r.name || r.location || "").toLowerCase();
+      return id === loc || id.includes(loc);
+    });
+    if (match) {
+      const url = match.origin || match.api || match.apiOrigin || match.baseUrl || match.url;
+      if (url) {
+        const base = String(url).replace(/\/+$/, "");
+        return base.endsWith("/tc/api/2.0") ? base : `${base}/tc/api/2.0`;
+      }
+    }
+  }
+  // Fallback til hardkodet URL
+  return getCoreBaseUrl(projectLocation);
 }
 
 async function fetchRaw(url, options = {}, timeoutMs = 30000) {
@@ -94,14 +131,14 @@ function extractPossibleUrl(payload) {
 
 // ─── Metadata ────────────────────────────────────────────────────────────────
 async function getFileMetadata({ token, projectLocation, fileId }) {
-  const base = getCoreBaseUrl(projectLocation);
+  const base = await getCoreBaseUrlAsync(projectLocation);
   const url = `${base}/files/${encodeURIComponent(fileId)}`;
   const res = await fetchJsonWithBearer(url, token);
   return { ok: res.ok, url, status: res.status, preview: shortText(res.text, 1000), data: res.json };
 }
 
 async function getFileVersions({ token, projectLocation, fileId }) {
-  const base = getCoreBaseUrl(projectLocation);
+  const base = await getCoreBaseUrlAsync(projectLocation);
   const url = `${base}/files/${encodeURIComponent(fileId)}/versions?tokenThumburl=false`;
   const res = await fetchJsonWithBearer(url, token);
   return { ok: res.ok, url, status: res.status, preview: shortText(res.text, 1000), data: res.json };
@@ -109,7 +146,7 @@ async function getFileVersions({ token, projectLocation, fileId }) {
 
 // ─── Download ────────────────────────────────────────────────────────────────
 async function tryCoreCandidates({ token, projectLocation, fileId, versionId }) {
-  const base = getCoreBaseUrl(projectLocation);
+  const base = await getCoreBaseUrlAsync(projectLocation);
 
   const candidates = [
     { name: "fs-downloadurl", url: `${base}/files/fs/${encodeURIComponent(fileId)}/downloadurl?versionId=${encodeURIComponent(versionId)}` },
@@ -255,7 +292,8 @@ async function handleListProjectKofFiles(body) {
 }
 
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {
-  const base = getCoreBaseUrl(projectLocation);
+  const base = await getCoreBaseUrlAsync(projectLocation);
+  const regions = await discoverRegions();
 
   const candidates = [
     { name: "search-kof", url: `${base}/search?projectId=${encodeURIComponent(projectId)}&query=.kof&type=file` },
@@ -302,6 +340,8 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
     ok: false, action: "listProjectKofFiles",
     error: "Fant ingen fungerende kandidat for fillisting, eller ingen .kof-filer i prosjektet.",
     project: { id: projectId, location: projectLocation },
+    resolvedBaseUrl: base,
+    regionsDiscovered: regions,
     candidatesTried: diagnostics.length,
     diagnostics
   };

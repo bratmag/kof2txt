@@ -6,10 +6,7 @@
     CONNECT_TIMEOUT_MS: 30000,
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
-
-    // Bytt denne hvis du har en annen stabil ikon-URL
     MENU_ICON_URL: "https://kof2txt.netlify.app/icon-192.png",
-
     MENU_MAIN_COMMAND: "KOF2TXT_MAIN",
     MENU_OPEN_COMMAND: "KOF2TXT_OPEN"
   };
@@ -28,18 +25,12 @@
 
   let ui = {};
 
-  function log(...args) {
-    console.log(...args);
-  }
-
-  function debug(...args) {
-    if (CONFIG.DEBUG) console.log(...args);
-  }
+  function log(...args) { console.log(...args); }
+  function debug(...args) { if (CONFIG.DEBUG) console.log(...args); }
 
   function setStatus(message) {
     log(`[STATUS] ${message}`);
     if (ui.status) ui.status.textContent = message;
-
     if (state.api?.extension?.setStatusMessage) {
       state.api.extension.setStatusMessage(message).catch(() => {});
     }
@@ -48,10 +39,8 @@
   function setOutput(data) {
     log("[OUTPUT]");
     log(data);
-
     if (ui.output) {
-      ui.output.textContent =
-        typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      ui.output.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
     }
   }
 
@@ -61,42 +50,26 @@
   }
 
   function safeJsonParse(text) {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(text); } catch { return null; }
   }
 
   function withTimeout(promise, ms, label) {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`${label} timed out after ${ms} ms`));
-      }, ms);
-
-      promise
-        .then((value) => {
-          clearTimeout(timer);
-          resolve(value);
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
+      const timer = setTimeout(() => { reject(new Error(`${label} timed out after ${ms} ms`)); }, ms);
+      promise.then((value) => { clearTimeout(timer); resolve(value); })
+             .catch((err) => { clearTimeout(timer); reject(err); });
     });
   }
 
   function triggerDownload(filename, text) {
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
-
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
@@ -107,66 +80,47 @@
   function resolveTokenWaiters(token) {
     const waiters = [...state.tokenWaiters];
     state.tokenWaiters = [];
-    for (const resolve of waiters) {
-      try {
-        resolve(token);
-      } catch {}
-    }
+    for (const resolve of waiters) { try { resolve(token); } catch {} }
   }
 
   function waitForToken(ms = CONFIG.TOKEN_WAIT_MS) {
     if (state.accessToken) return Promise.resolve(state.accessToken);
-
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         state.tokenWaiters = state.tokenWaiters.filter((fn) => fn !== wrappedResolve);
         reject(new Error(`Ventet for lenge på access token (${ms} ms)`));
       }, ms);
-
-      function wrappedResolve(token) {
-        clearTimeout(timer);
-        resolve(token);
-      }
-
+      function wrappedResolve(token) { clearTimeout(timer); resolve(token); }
       state.tokenWaiters.push(wrappedResolve);
     });
   }
 
   function buildUi() {
     const app = document.getElementById("app");
-    if (!app) {
-      throw new Error("Fant ikke #app i index.html");
-    }
-
+    if (!app) throw new Error("Fant ikke #app i index.html");
     app.innerHTML = "";
 
     const root = document.createElement("div");
 
     const titleCard = document.createElement("div");
     titleCard.className = "card";
-
     const title = document.createElement("h2");
     title.textContent = "KOF2TXT";
     title.style.margin = "0 0 8px 0";
-
     const intro = document.createElement("div");
     intro.className = "muted";
-    intro.textContent = "Hent .kof-filer fra prosjektet og konverter valgt fil eller alle filer til .txt.";
-
+    intro.textContent = "Hent .kof-filer fra prosjektet og konverter til .txt.";
     titleCard.appendChild(title);
     titleCard.appendChild(intro);
 
     const projectCard = document.createElement("div");
     projectCard.className = "card";
-
     const projectLabel = document.createElement("div");
     projectLabel.style.fontWeight = "bold";
     projectLabel.style.marginBottom = "4px";
     projectLabel.textContent = "Prosjekt";
-
     const projectValue = document.createElement("div");
     projectValue.textContent = "-";
-
     projectCard.appendChild(projectLabel);
     projectCard.appendChild(projectValue);
 
@@ -175,17 +129,12 @@
 
     const btnRow = document.createElement("div");
     btnRow.className = "btn-row";
-
     const refreshBtn = document.createElement("button");
     refreshBtn.textContent = "Oppdater liste";
-
     const convertSelectedBtn = document.createElement("button");
     convertSelectedBtn.textContent = "Konverter valgt";
-
     const convertAllBtn = document.createElement("button");
     convertAllBtn.textContent = "Konverter alle";
-
-
     btnRow.appendChild(refreshBtn);
     btnRow.appendChild(convertSelectedBtn);
     btnRow.appendChild(convertAllBtn);
@@ -197,15 +146,12 @@
 
     const listWrap = document.createElement("div");
     listWrap.style.marginTop = "12px";
-
     const listLabel = document.createElement("div");
     listLabel.style.fontWeight = "bold";
     listLabel.style.marginBottom = "6px";
     listLabel.textContent = "KOF-filer i prosjektet";
-
     const fileList = document.createElement("div");
     fileList.id = "fileList";
-
     listWrap.appendChild(listLabel);
     listWrap.appendChild(fileList);
 
@@ -226,25 +172,16 @@
     root.appendChild(actionCard);
     root.appendChild(statusBox);
     root.appendChild(output);
-
     app.appendChild(root);
 
     ui = {
-      root,
-      projectValue,
-      refreshBtn,
-      convertSelectedBtn,
-      convertAllBtn,
-      selectedInfo,
-      fileList,
-      status: statusBox,
-      output
+      root, projectValue, refreshBtn, convertSelectedBtn, convertAllBtn,
+      selectedInfo, fileList, status: statusBox, output
     };
   }
 
   function renderFileList() {
     if (!ui.fileList) return;
-
     ui.fileList.innerHTML = "";
 
     if (!state.fileList.length) {
@@ -273,7 +210,6 @@
       radio.value = file.id;
       radio.style.marginRight = "8px";
       radio.checked = state.selectedFile?.id === file.id;
-
       radio.addEventListener("change", () => {
         state.selectedFile = file;
         updateSelectedInfo();
@@ -298,180 +234,121 @@
 
   function updateSelectedInfo() {
     if (!ui.selectedInfo) return;
-
     if (!state.selectedFile) {
       ui.selectedInfo.textContent = "Ingen fil valgt.";
       return;
     }
-
     ui.selectedInfo.textContent =
       `Valgt fil: ${state.selectedFile.name} | ID: ${state.selectedFile.id}`;
   }
 
   async function connectWorkspace() {
     setStatus("Kobler til Trimble Connect...");
-
     if (!window.TrimbleConnectWorkspace?.connect) {
-      throw new Error(
-        "TrimbleConnectWorkspace ikke funnet. Sjekk at Workspace API-scriptet er lastet."
-      );
+      throw new Error("TrimbleConnectWorkspace ikke funnet.");
     }
-
     const api = await TrimbleConnectWorkspace.connect(
-      window.parent,
-      onWorkspaceEvent,
-      CONFIG.CONNECT_TIMEOUT_MS
+      window.parent, onWorkspaceEvent, CONFIG.CONNECT_TIMEOUT_MS
     );
-
     state.api = api;
     state.isEmbedded = window.parent && window.parent !== window;
     debug("API keys:", Object.keys(api || {}));
-
+    // Logg også alle metoder på project for å oppdage upload-funksjoner
+    if (api?.project) {
+      debug("Project API methods:", Object.keys(api.project));
+    }
     return api;
   }
 
   async function ensureMenu() {
-  if (!state.api?.ui?.setMenu) {
-    debug("ui.setMenu finnes ikke.");
-    return false;
-  }
-
-  const mainMenuObject = {
-    title: "KOF2TXT",
-    icon: `${window.location.origin}/icon.png`,
-    command: CONFIG.MENU_MAIN_COMMAND,
-    subMenus: [
-      {
-        title: "Konverter KOF",
-        command: CONFIG.MENU_OPEN_COMMAND
-      }
-    ]
-  };
-
-  await state.api.ui.setMenu(mainMenuObject);
-  await state.api.ui.setActiveMenuItem(CONFIG.MENU_OPEN_COMMAND).catch(() => {});
-  debug("Meny satt via ui.setMenu");
-  return true;
+    if (!state.api?.ui?.setMenu) {
+      debug("ui.setMenu finnes ikke.");
+      return false;
+    }
+    const mainMenuObject = {
+      title: "KOF2TXT",
+      icon: `${window.location.origin}/icon.png`,
+      command: CONFIG.MENU_MAIN_COMMAND,
+      subMenus: [{ title: "Konverter KOF", command: CONFIG.MENU_OPEN_COMMAND }]
+    };
+    await state.api.ui.setMenu(mainMenuObject);
+    await state.api.ui.setActiveMenuItem(CONFIG.MENU_OPEN_COMMAND).catch(() => {});
+    debug("Meny satt via ui.setMenu");
+    return true;
   }
 
   async function requestAccessToken() {
     if (state.accessToken) return state.accessToken;
-
     setStatus("Ber om access token...");
-
     if (!state.api?.extension?.requestPermission) {
       throw new Error("extension.requestPermission finnes ikke.");
     }
-
     const result = await state.api.extension.requestPermission("accesstoken");
     debug("requestPermission svar:", result);
-
     if (typeof result === "string" && result && result !== "pending" && result !== "denied") {
       state.accessToken = result;
       resolveTokenWaiters(result);
       debug("Access token mottatt direkte.");
       return result;
     }
-
-    if (result === "denied") {
-      throw new Error("Tilgang til access token ble avslått.");
-    }
-
+    if (result === "denied") throw new Error("Tilgang til access token ble avslått.");
     if (result === "pending" || !result) {
-      debug("Token er pending. Venter på extension.accessToken-event...");
+      debug("Token er pending. Venter på event...");
       const token = await waitForToken(CONFIG.TOKEN_WAIT_MS);
       state.accessToken = token;
       return token;
     }
-
-    throw new Error(`Uventet svar fra requestPermission: ${String(result)}`);
+    throw new Error(`Uventet svar: ${String(result)}`);
   }
 
   async function getProject() {
     if (state.project) return state.project;
-
     setStatus("Henter prosjektinfo...");
-
-    const getProjectFn =
-      state.api?.project?.getCurrentProject ||
-      state.api?.project?.getProject;
-
-    if (!getProjectFn) {
-      throw new Error("Fant verken project.getCurrentProject eller project.getProject.");
-    }
-
+    const getProjectFn = state.api?.project?.getCurrentProject || state.api?.project?.getProject;
+    if (!getProjectFn) throw new Error("Fant ingen getProject-metode.");
     const project = await getProjectFn.call(state.api.project);
-
-    if (!project?.id) {
-      throw new Error("Fant ikke aktivt prosjekt.");
-    }
-
+    if (!project?.id) throw new Error("Fant ikke aktivt prosjekt.");
     state.project = project;
     debug("Project:", project);
-
     if (ui.projectValue) {
       ui.projectValue.textContent =
         `${project.name || "-"} (${project.id}) | region: ${project.location || "-"}`;
     }
-
     return project;
   }
 
   async function ensureReady() {
-    if (!state.api) {
-      throw new Error("Ikke koblet til Workspace API.");
-    }
-
-    if (!state.accessToken) {
-      await requestAccessToken();
-    }
-
-    if (!state.project) {
-      await getProject();
-    }
+    if (!state.api) throw new Error("Ikke koblet til Workspace API.");
+    if (!state.accessToken) await requestAccessToken();
+    if (!state.project) await getProject();
   }
 
   async function callProxy(action, payload) {
     const res = await withTimeout(
       fetch(CONFIG.PROXY_URL, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          action,
-          ...payload
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...payload })
       }),
-      60000,
-      `Proxy ${action}`
+      60000, `Proxy ${action}`
     );
-
     const text = await res.text();
     const json = safeJsonParse(text);
-
-    return {
-      ok: res.ok,
-      status: res.status,
-      text,
-      json
-    };
+    return { ok: res.ok, status: res.status, text, json };
   }
 
+  // ─── KOF-parser ─────────────────────────────────────────────────────────
   function convertKofToTxt(kofText) {
     const points = parseKofPoints(kofText);
-
     if (!points.length) {
       return [
         "Punktnavn,Nord,Øst,Høyde",
         "# Fant ingen punkter i KOF-fila",
-        "# Første 1000 tegn fra fila:",
+        "# Første 1000 tegn:",
         ...String(kofText || "").slice(0, 1000).split(/\r?\n/)
       ].join("\n");
     }
-
     const lines = ["Punktnavn,Nord,Øst,Høyde"];
-
     for (const p of points) {
       lines.push([
         csvEscape(p.name || ""),
@@ -480,14 +357,12 @@
         formatNumberForTxt(p.height)
       ].join(","));
     }
-
     return lines.join("\n");
   }
 
   function parseKofPoints(kofText) {
     const text = String(kofText || "");
     const lines = text.split(/\r?\n/);
-
     const points = [];
     let current = {};
 
@@ -500,7 +375,6 @@
         current = {};
         continue;
       }
-
       if (/^END/i.test(line) || /^SLUTT/i.test(line)) {
         if (isCompletePoint(current)) points.push(normalizePoint(current));
         current = {};
@@ -511,7 +385,6 @@
       if (kv) {
         const key = normalizeKey(kv[1]);
         const value = kv[2].trim();
-
         if (!current.name && isNameKey(key)) current.name = cleanValue(value);
         if (current.north == null && isNorthKey(key)) current.north = parseNumber(value);
         if (current.east == null && isEastKey(key)) current.east = parseNumber(value);
@@ -525,47 +398,20 @@
         current = free;
       }
     }
-
     if (isCompletePoint(current)) points.push(normalizePoint(current));
-
     return dedupePoints(points);
   }
 
   function tryParseFreePointLine(line) {
     const s = String(line || "").trim();
-
-    let m = s.match(
-      /^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/
-    );
-
-    if (m) {
-      return {
-        name: m[1],
-        north: parseNumber(m[2]),
-        east: parseNumber(m[3]),
-        height: parseNumber(m[4])
-      };
-    }
-
-    m = s.match(
-      /^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/
-    );
-
-    if (m) {
-      return {
-        name: m[1],
-        north: parseNumber(m[2]),
-        east: parseNumber(m[3]),
-        height: parseNumber(m[4])
-      };
-    }
-
+    let m = s.match(/^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
+    if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: parseNumber(m[4]) };
+    m = s.match(/^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/);
+    if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: parseNumber(m[4]) };
     return null;
   }
 
-  function isCompletePoint(p) {
-    return !!p && p.name && p.north != null && p.east != null;
-  }
+  function isCompletePoint(p) { return !!p && p.name && p.north != null && p.east != null; }
 
   function normalizePoint(p) {
     return {
@@ -579,37 +425,26 @@
   function dedupePoints(points) {
     const seen = new Set();
     const out = [];
-
     for (const p of points) {
       const key = `${p.name}|${p.north}|${p.east}|${p.height}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(p);
     }
-
     return out;
   }
 
   function normalizeKey(key) {
-    return String(key || "")
-      .trim()
-      .toLowerCase()
+    return String(key || "").trim().toLowerCase()
       .replace(/[æøå]/g, (c) => ({ "æ": "ae", "ø": "o", "å": "a" }[c]))
       .replace(/[^a-z0-9]/g, "");
   }
 
-  function cleanValue(value) {
-    return String(value || "").trim().replace(/^"|"$/g, "");
-  }
+  function cleanValue(value) { return String(value || "").trim().replace(/^"|"$/g, ""); }
 
   function parseNumber(value) {
     if (value == null) return null;
-
-    const s = String(value)
-      .trim()
-      .replace(/\s+/g, "")
-      .replace(",", ".");
-
+    const s = String(value).trim().replace(/\s+/g, "").replace(",", ".");
     const n = Number(s);
     return Number.isFinite(n) ? n : null;
   }
@@ -621,28 +456,18 @@
 
   function csvEscape(value) {
     const s = String(value ?? "");
-    if (/[",;\n]/.test(s)) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
+    if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   }
 
   function isNameKey(key) {
     return ["punktnavn", "punktnummer", "punktnr", "punktid", "punkt", "navn", "name", "id", "label"].includes(key);
   }
+  function isNorthKey(key) { return ["n", "nord", "north", "northing", "y"].includes(key); }
+  function isEastKey(key) { return ["e", "ost", "east", "easting", "x"].includes(key); }
+  function isHeightKey(key) { return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key); }
 
-  function isNorthKey(key) {
-    return ["n", "nord", "north", "northing", "y"].includes(key);
-  }
-
-  function isEastKey(key) {
-    return ["e", "ost", "east", "easting", "x"].includes(key);
-  }
-
-  function isHeightKey(key) {
-    return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key);
-  }
-
+  // ─── Hovedfunksjoner ────────────────────────────────────────────────────
   async function refreshKofList() {
     try {
       await ensureReady();
@@ -656,17 +481,11 @@
 
       if (!proxyRes.ok || !proxyRes.json) {
         setStatus("Proxy-feil ved listing");
-        setOutput({
-          ok: false,
-          step: "listProxyHttp",
-          status: proxyRes.status,
-          preview: shortText(proxyRes.text, 1500)
-        });
+        setOutput({ ok: false, step: "listProxyHttp", status: proxyRes.status, preview: shortText(proxyRes.text, 1500) });
         return;
       }
 
       const result = proxyRes.json;
-
       if (!result.ok) {
         setStatus("Klarte ikke hente filliste");
         setOutput(result);
@@ -674,7 +493,6 @@
       }
 
       state.fileList = Array.isArray(result.files) ? result.files : [];
-
       if (!state.fileList.length) {
         state.selectedFile = null;
       } else if (!state.selectedFile || !state.fileList.some((f) => f.id === state.selectedFile.id)) {
@@ -690,16 +508,12 @@
         action: "listProjectKofFiles",
         project: result.project,
         fileCount: state.fileList.length,
-        candidatesTried: result.candidatesTried,
-        diagnostics: result.diagnostics
+        candidatesTried: result.candidatesTried
       });
     } catch (err) {
       console.error(err);
       setStatus("Feil ved henting av filliste");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
+      setOutput({ ok: false, error: err?.message || String(err) });
     }
   }
 
@@ -712,23 +526,13 @@
       fileName: file.name
     });
 
-    if (!proxyRes.ok || !proxyRes.json) {
-      throw new Error(`Proxy-feil (${proxyRes.status})`);
-    }
-
+    if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy-feil (${proxyRes.status})`);
     const result = proxyRes.json;
-    if (!result.ok) {
-      throw new Error(result.error || result.step || "Klarte ikke laste ned KOF-fil");
-    }
+    if (!result.ok) throw new Error(result.error || result.step || "Klarte ikke laste ned KOF-fil");
 
     const txt = convertKofToTxt(result.text || "");
     const outName = String(result.file?.name || file.name || "output.kof").replace(/\.kof$/i, ".txt");
-
-    return {
-      outName,
-      txt,
-      result
-    };
+    return { outName, txt, result };
   }
 
   async function processSelectedFile() {
@@ -738,57 +542,29 @@
       const file = state.selectedFile;
       if (!file?.id) {
         setStatus("Ingen fil valgt");
-        setOutput({
-          ok: false,
-          step: "noSelectedFile",
-          message: "Velg en .kof-fil i listen først."
-        });
+        setOutput({ ok: false, step: "noSelectedFile", message: "Velg en .kof-fil i listen først." });
         return;
       }
 
       setStatus(`Laster ned ${file.name} ...`);
-
       const converted = await downloadAndConvertFile(file);
       state.lastResult = converted.result;
 
-const uploadRes = await callProxy("uploadConvertedTxt", {
-  token: state.accessToken,
-  projectId: state.project.id,
-  projectLocation: state.project.location,
-  fileName: converted.outName,
-  content: converted.txt,
-  parentId: file.parentId || converted.result.file?.parentId || null
-});
-
-setStatus(`Klar: ${converted.outName}`);
-
-setOutput({
-  ok: uploadRes.json?.ok === false ? false : true,
-  project: converted.result.project,
-  sourceFile: converted.result.file,
-  convertedFile: {
-    name: converted.outName,
-    uploaded: !!uploadRes.json?.ok
-  },
-  uploadResult: uploadRes.json || {
-    ok: false,
-    status: uploadRes.status,
-    preview: shortText(uploadRes.text || "", 1500)
-  },
-  preview: shortText(converted.result.text || "", 1500)
-});
-
-// Behold lokal nedlasting inntil vi vet at upload fungerer stabilt
-triggerDownload(converted.outName, converted.txt);
+      setStatus(`Klar: ${converted.outName}`);
+      setOutput({
+        ok: true,
+        project: converted.result.project,
+        sourceFile: converted.result.file,
+        convertedFile: { name: converted.outName },
+        message: `"${converted.outName}" er lastet ned lokalt. Last den opp manuelt til Trimble Connect ved behov.`,
+        preview: shortText(converted.result.text || "", 1500)
+      });
 
       triggerDownload(converted.outName, converted.txt);
     } catch (err) {
       console.error(err);
       setStatus("Feil");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
+      setOutput({ ok: false, error: err?.message || String(err) });
     }
   }
 
@@ -798,11 +574,7 @@ triggerDownload(converted.outName, converted.txt);
 
       if (!state.fileList.length) {
         setStatus("Ingen .kof-filer i listen");
-        setOutput({
-          ok: false,
-          step: "noFiles",
-          message: "Trykk Oppdater liste først."
-        });
+        setOutput({ ok: false, step: "noFiles", message: "Trykk Oppdater liste først." });
         return;
       }
 
@@ -814,29 +586,12 @@ triggerDownload(converted.outName, converted.txt);
 
         try {
           const converted = await downloadAndConvertFile(file);
-
-const uploadRes = await callProxy("uploadConvertedTxt", {
-  token: state.accessToken,
-  projectId: state.project.id,
-  projectLocation: state.project.location,
-  fileName: converted.outName,
-  content: converted.txt,
-  parentId: file.parentId || converted.result.file?.parentId || null
-});
-
-// Behold lokal nedlasting inntil vi vet at upload fungerer stabilt
-triggerDownload(converted.outName, converted.txt);
-
-summary.push({
-  ok: !!uploadRes.json?.ok,
-  file: file.name,
-  outName: converted.outName,
-  uploadResult: uploadRes.json || {
-    ok: false,
-    status: uploadRes.status,
-    preview: shortText(uploadRes.text || "", 1500)
-  }
-});
+          triggerDownload(converted.outName, converted.txt);
+          summary.push({
+            ok: true,
+            file: file.name,
+            outName: converted.outName
+          });
         } catch (err) {
           summary.push({
             ok: false,
@@ -844,7 +599,6 @@ summary.push({
             error: err?.message || String(err)
           });
         }
-
         count += 1;
       }
 
@@ -863,17 +617,12 @@ summary.push({
     } catch (err) {
       console.error(err);
       setStatus("Feil i Konverter alle");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
+      setOutput({ ok: false, error: err?.message || String(err) });
     }
   }
 
-
   function onWorkspaceEvent(event, args) {
     debug("[TC EVENT]", event, args);
-
     if (event === "extension.accessToken") {
       const token = args?.data;
       if (typeof token === "string" && token && token !== "pending" && token !== "denied") {
@@ -883,32 +632,20 @@ summary.push({
       }
       return;
     }
-
     if (event === "extension.command") {
       state.lastCommand = args?.data || null;
       debug("extension.command:", state.lastCommand);
-
       if (state.lastCommand === CONFIG.MENU_OPEN_COMMAND) {
         setStatus("KOF2TXT åpnet fra meny.");
       }
-
       return;
     }
   }
 
   function wireUi() {
-    ui.refreshBtn.addEventListener("click", () => {
-      refreshKofList();
-    });
-
-    ui.convertSelectedBtn.addEventListener("click", () => {
-      processSelectedFile();
-    });
-
-    ui.convertAllBtn.addEventListener("click", () => {
-      processAllFiles();
-    });
-
+    ui.refreshBtn.addEventListener("click", () => { refreshKofList(); });
+    ui.convertSelectedBtn.addEventListener("click", () => { processSelectedFile(); });
+    ui.convertAllBtn.addEventListener("click", () => { processAllFiles(); });
   }
 
   async function init() {
@@ -924,38 +661,44 @@ summary.push({
       setOutput({
         ok: true,
         embedded: state.isEmbedded,
-        message: "Extension lastet. Meny registrert. Token og prosjekt hentes når du trykker Oppdater liste eller kjører en handling."
+        apiKeys: state.api ? Object.keys(state.api) : [],
+        projectMethods: state.api?.project ? Object.keys(state.api.project) : [],
+        message: "Extension lastet. Se projectMethods — der finnes kanskje en upload-funksjon."
       });
 
       window.kof2txt = {
-  state,
-  refreshKofList,
-  processSelectedFile,
-  processAllFiles,
-  ensureMenu,
-  async reconnect() {
-    state.api = null;
-    state.accessToken = null;
-    state.project = null;
-    await connectWorkspace();
-    await ensureMenu();
-    return true;
-  },
-  async prime() {
-    await ensureReady();
-    return {
-      accessToken: !!state.accessToken,
-      project: state.project
-    };
-  }
-};
+        state,
+        refreshKofList,
+        processSelectedFile,
+        processAllFiles,
+        ensureMenu,
+        async reconnect() {
+          state.api = null;
+          state.accessToken = null;
+          state.project = null;
+          await connectWorkspace();
+          await ensureMenu();
+          return true;
+        },
+        async prime() {
+          await ensureReady();
+          return { accessToken: !!state.accessToken, project: state.project };
+        },
+        // Debug-hjelper: logger alle tilgjengelige metoder på API-et
+        inspectApi() {
+          if (!state.api) return "Ikke koblet";
+          const result = {};
+          for (const key of Object.keys(state.api)) {
+            const sub = state.api[key];
+            result[key] = sub && typeof sub === "object" ? Object.keys(sub) : typeof sub;
+          }
+          return result;
+        }
+      };
     } catch (err) {
       console.error(err);
       setStatus("Feil");
-      setOutput({
-        ok: false,
-        error: err?.message || String(err)
-      });
+      setOutput({ ok: false, error: err?.message || String(err) });
     }
   }
 

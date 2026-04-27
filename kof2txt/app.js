@@ -20,7 +20,10 @@
     tokenWaiters: [],
     isEmbedded: false,
     lastResult: null,
-    busy: false
+    busy: false,
+    explorerApi: null,
+    explorerVisible: false,
+    lastDownloadName: null
   };
 
   let ui = {};
@@ -47,6 +50,7 @@
     state.busy = busy;
     if (ui.refreshBtn) ui.refreshBtn.disabled = busy;
     if (ui.localUploadBtn) ui.localUploadBtn.disabled = busy;
+    if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = busy || !canOpenProjectUpload();
     if (ui.convertSelectedBtn) ui.convertSelectedBtn.disabled = busy || !state.selectedFile;
     if (ui.convertAllBtn) ui.convertAllBtn.disabled = busy || !state.fileList.length;
   }
@@ -85,6 +89,36 @@
     return /\.kof$/i.test(name) ? name.replace(/\.kof$/i, ".txt") : `${name}.txt`;
   }
 
+  function getUploadTargetFile() {
+    return state.lastResult?.file || state.selectedFile || null;
+  }
+
+  function getUploadTargetFolderId() {
+    return getUploadTargetFile()?.parentId || null;
+  }
+
+  function canOpenProjectUpload() {
+    return !!(state.project && getUploadTargetFile());
+  }
+
+  function getUploadPanelSummary() {
+    const targetFile = getUploadTargetFile();
+    const folderId = getUploadTargetFolderId();
+    const projectName = state.project?.name || state.project?.id || "";
+    const sourceName = targetFile?.name || null;
+    const suggestedName = state.lastDownloadName || null;
+
+    return {
+      folderId,
+      projectName,
+      sourceName,
+      suggestedName,
+      locationText: folderId
+        ? `Samme mappe som ${sourceName || "valgt fil"}`
+        : "Prosjektets rotmappe"
+    };
+  }
+
   function resolveTokenWaiters(token) {
     const waiters = [...state.tokenWaiters];
     state.tokenWaiters = [];
@@ -103,7 +137,6 @@
     });
   }
 
-  // ─── UI Konstruksjon ────────────────────────────────────────────────────
   function buildUi() {
     const app = document.getElementById("app");
     if (!app) throw new Error("Fant ikke #app i index.html");
@@ -135,23 +168,45 @@
     const refreshBtn = el("button", null, "Oppdater liste");
     const convertSelectedBtn = el("button", "primary", "Konverter valgt");
     const convertAllBtn = el("button", null, "Konverter alle");
-    const localUploadBtn = el("button", null, "Last opp lokal fil");
+    const localUploadBtn = el("button", null, "Konverter lokal fil");
+    const projectUploadBtn = el("button", null, "Last opp til Trimble Connect");
     const localFileInput = document.createElement("input");
     localFileInput.type = "file";
     localFileInput.accept = ".kof,text/plain";
     localFileInput.style.display = "none";
     convertSelectedBtn.disabled = true;
     convertAllBtn.disabled = true;
+    projectUploadBtn.disabled = true;
     btnRow.appendChild(refreshBtn);
     btnRow.appendChild(convertSelectedBtn);
     btnRow.appendChild(convertAllBtn);
     btnRow.appendChild(localUploadBtn);
+    btnRow.appendChild(projectUploadBtn);
     btnRow.appendChild(localFileInput);
     filesCard.appendChild(btnRow);
 
     const fileList = el("div", "file-list");
     fileList.id = "fileList";
     filesCard.appendChild(fileList);
+
+    const explorerCard = el("div", "card embed-card");
+    explorerCard.style.display = "none";
+    const explorerHeader = el("div", "card-header", [
+      el("div", null, [
+        el("div", "label", "Last opp til Trimble Connect"),
+        el("div", "subtitle", "Trimble Connects egen opplastingsvisning, åpnet i riktig prosjektmappe")
+      ])
+    ]);
+    const closeExplorerBtn = el("button", null, "Lukk");
+    explorerHeader.appendChild(closeExplorerBtn);
+    explorerCard.appendChild(explorerHeader);
+    const explorerTarget = el("div", "embed-meta", "");
+    explorerCard.appendChild(explorerTarget);
+    const explorerFrame = document.createElement("iframe");
+    explorerFrame.className = "explorer-frame";
+    explorerFrame.title = "Trimble Connect File Explorer";
+    explorerFrame.hidden = true;
+    explorerCard.appendChild(explorerFrame);
 
     const statusCard = el("div", "card");
     const status = el("div", "status", "Starter...");
@@ -172,6 +227,7 @@
     app.appendChild(titleCard);
     app.appendChild(projectCard);
     app.appendChild(filesCard);
+    app.appendChild(explorerCard);
     app.appendChild(statusCard);
     app.appendChild(debugDetails);
 
@@ -182,8 +238,13 @@
       convertSelectedBtn,
       convertAllBtn,
       localUploadBtn,
+      projectUploadBtn,
       localFileInput,
       fileList,
+      explorerCard,
+      closeExplorerBtn,
+      explorerTarget,
+      explorerFrame,
       status,
       hint,
       debugOutput
@@ -204,6 +265,7 @@
   function renderFileList() {
     if (!ui.fileList) return;
     ui.fileList.innerHTML = "";
+    if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = state.busy || !canOpenProjectUpload();
 
     ui.fileCount.textContent = state.fileList.length
       ? `${state.fileList.length} fil${state.fileList.length === 1 ? "" : "er"}`
@@ -251,7 +313,6 @@
     ui.hint.innerHTML = `<span class="hint-icon">💡</span>${message}`;
   }
 
-  // ─── Workspace API ──────────────────────────────────────────────────────
   async function connectWorkspace() {
     setStatus("Kobler til Trimble Connect...");
     if (!window.TrimbleConnectWorkspace?.connect) {
@@ -326,6 +387,7 @@
                           project.location || "ukjent";
       ui.projectValue.innerHTML = `${escapeHtml(project.name || "-")} <span class="badge">${escapeHtml(regionLabel)}</span>`;
     }
+    setBusy(state.busy);
     return project;
   }
 
@@ -339,6 +401,103 @@
     if (!state.api) throw new Error("Ikke koblet til Workspace API.");
     if (!state.accessToken) await requestAccessToken();
     if (!state.project) await getProject();
+  }
+
+  function showExplorerPanel(show) {
+    state.explorerVisible = !!show;
+    if (!ui.explorerCard) return;
+    ui.explorerCard.style.display = show ? "block" : "none";
+    if (ui.explorerFrame) ui.explorerFrame.hidden = !show;
+  }
+
+  async function waitForFrameLoad(frame) {
+    if (!frame) throw new Error("Fant ikke explorer-iframe.");
+    if (frame.contentWindow && frame.dataset.loaded === "true") return;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Explorer iframe lastet ikke i tide.")), 30000);
+      frame.addEventListener("load", () => {
+        frame.dataset.loaded = "true";
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+  }
+
+  async function ensureExplorerApi() {
+    if (state.explorerApi) return state.explorerApi;
+    if (!ui.explorerFrame) throw new Error("Explorer-iframe mangler i UI.");
+    if (!window.TrimbleConnectWorkspace?.getConnectEmbedUrl) {
+      throw new Error("getConnectEmbedUrl er ikke tilgjengelig.");
+    }
+
+    if (!ui.explorerFrame.src) {
+      ui.explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
+    }
+
+    await waitForFrameLoad(ui.explorerFrame);
+
+    state.explorerApi = await TrimbleConnectWorkspace.connect(
+      ui.explorerFrame,
+      async (event) => {
+        if (event === "extension.sessionInvalid") {
+          const token = await requestAccessToken().catch(() => null);
+          if (token && state.explorerApi?.embed?.setTokens) {
+            state.explorerApi.embed.setTokens({ accessToken: token }).catch(() => {});
+          }
+        }
+      },
+      CONFIG.CONNECT_TIMEOUT_MS
+    );
+
+    return state.explorerApi;
+  }
+
+  async function openProjectUploadExplorer() {
+    try {
+      setBusy(true);
+      showHint(null, false);
+      await ensureReady();
+
+      const folderId = getUploadTargetFolderId();
+      const targetFile = getUploadTargetFile();
+      const explorerApi = await ensureExplorerApi();
+      const summary = getUploadPanelSummary();
+
+      await explorerApi.embed.setTokens({ accessToken: state.accessToken });
+      await explorerApi.embed.initFileExplorer({
+        projectId: state.project.id,
+        folderId: summary.folderId || undefined,
+        enableUploadFiles: true,
+        enableAdd: true,
+        enableCreateFolder: false,
+        enableExplorerKebabMenu: false,
+        enableExplorerAllProjects: false,
+        enableSelect: true
+      });
+
+      if (ui.explorerTarget) {
+        const suggestedText = summary.suggestedName
+          ? `Last opp <strong>${escapeHtml(summary.suggestedName)}</strong> via <strong>Legg til</strong> eller dra filen inn her.`
+          : `Bruk <strong>Legg til</strong> eller dra filen inn her for å laste opp den konverterte TXT-filen.`;
+        ui.explorerTarget.innerHTML = `${escapeHtml(summary.locationText)} <span class="badge">${escapeHtml(summary.projectName)}</span><br>${suggestedText}`;
+      }
+
+      showExplorerPanel(true);
+      setStatus("Trimble Connect-mappen for opplasting er åpnet", "success");
+      setDebug({
+        action: "openProjectUploadExplorer",
+        projectId: state.project.id,
+        folderId: folderId || null,
+        targetFile
+      });
+    } catch (err) {
+      console.error(err);
+      showExplorerPanel(false);
+      setStatus(`Feil: ${err?.message || String(err)}`, "error");
+      setDebug({ error: err?.message || String(err), stack: err?.stack, action: "openProjectUploadExplorer" });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function callProxy(action, payload) {
@@ -355,7 +514,6 @@
     return { ok: res.ok, status: res.status, text, json };
   }
 
-  // ─── KOF-parser ─────────────────────────────────────────────────────────
   function convertKofToTxt(kofText) {
     const points = parseKofPoints(kofText);
     if (!points.length) {
@@ -423,23 +581,15 @@
   function tryParseFreePointLine(line) {
     const s = String(line || "").trim();
 
-    // KOF 05-variant: 05 Punktnavn Kode Nord Øst Høyde
-    // Eksempel: 05 p1 4051 6694974.582 297294.438 36.131
-    // Her ignorerer vi kodefeltet, fordi TXT-formatet bare skal ha punktnavn,nord,øst,høyde.
     let m = s.match(/^05\s+([^\s]+)\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) return { name: m[1], north: parseNumber(m[3]), east: parseNumber(m[4]), height: parseNumber(m[5]) };
 
-    // KOF 05-variant: 05 Punktnavn Nord Øst Høyde
-    // Eksempel: 05 11 6643083.229 592220.933 10.000
     m = s.match(/^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: parseNumber(m[4]) };
 
-    // KOF 05-variant: 05 Punktnavn Nord Øst, uten høyde
-    // Eksempel: 05 G1 6627190.530 620539.580
     m = s.match(/^05\s+([^\s]+)\s+(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: null };
 
-    // Generisk variant uten 05: Punktnavn Nord Øst Høyde
     m = s.match(/^([^\s,;]+)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) return { name: m[1], north: parseNumber(m[2]), east: parseNumber(m[3]), height: parseNumber(m[4]) };
 
@@ -490,7 +640,7 @@
 
   function csvEscape(value) {
     const s = String(value ?? "");
-    if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, "\"\"")}"`;
     return s;
   }
 
@@ -502,7 +652,6 @@
   function isEastKey(key) { return ["e", "ost", "east", "easting", "x"].includes(key); }
   function isHeightKey(key) { return ["h", "z", "hoyde", "height", "elev", "elevation", "kote"].includes(key); }
 
-  // ─── Hovedfunksjoner ────────────────────────────────────────────────────
   async function refreshKofList() {
     try {
       setBusy(true);
@@ -592,10 +741,11 @@
       setStatus(`Konverterer ${file.name}...`, "working");
       const converted = await downloadAndConvertFile(file);
       state.lastResult = converted.result;
+      state.lastDownloadName = converted.outName;
 
       triggerDownload(converted.outName, converted.txt);
       setStatus(`Ferdig: ${converted.outName} er lastet ned lokalt`, "success");
-      showHint(`Filen er lagret lokalt på maskinen din. Dra og slipp <strong>${escapeHtml(converted.outName)}</strong> tilbake inn i Trimble Connect-mappen for å laste den opp.`);
+      showHint(`Filen er lagret lokalt på maskinen din. Bruk <strong>Last opp til Trimble Connect</strong> for å åpne riktig mappe og laste opp <strong>${escapeHtml(converted.outName)}</strong>.`);
 
       setDebug({
         action: "processSelectedFile",
@@ -619,7 +769,7 @@
       await ensureReady();
 
       if (!state.fileList.length) {
-        setStatus("Ingen filer i listen — trykk Oppdater liste først", "error");
+        setStatus("Ingen filer i listen - trykk Oppdater liste først", "error");
         return;
       }
 
@@ -641,10 +791,15 @@
 
       const okCount = summary.filter((x) => x.ok).length;
       const failCount = summary.length - okCount;
+      state.lastDownloadName = okCount === 1 ? summary.find((x) => x.ok)?.outName || null : null;
 
       if (failCount === 0) {
         setStatus(`Ferdig! ${okCount} fil${okCount === 1 ? "" : "er"} konvertert og lastet ned`, "success");
-        showHint(`Alle filer er lagret lokalt. Dra og slipp dem tilbake inn i Trimble Connect-mappen for å laste dem opp.`);
+        showHint(
+          okCount === 1
+            ? `Filen er lagret lokalt. Bruk <strong>Last opp til Trimble Connect</strong> for å åpne riktig mappe og laste opp <strong>${escapeHtml(state.lastDownloadName || "den konverterte filen")}</strong>.`
+            : `Filene er lagret lokalt. Bruk <strong>Last opp til Trimble Connect</strong> for å åpne prosjektmappen og laste opp dem du vil sende tilbake.`
+        );
       } else {
         setStatus(`Fullført med ${failCount} feil (${okCount} OK, ${failCount} feilet)`, "error");
       }
@@ -659,7 +814,6 @@
     }
   }
 
-  // ─── Event Handlers ─────────────────────────────────────────────────────
   async function processLocalFile(file) {
     try {
       setBusy(true);
@@ -671,6 +825,7 @@
       const kofText = await file.text();
       const txt = convertKofToTxt(kofText || "");
       const outName = getTxtFilename(file.name || "output.kof");
+      state.lastDownloadName = outName;
 
       triggerDownload(outName, txt);
       setStatus(`Ferdig: ${outName} er lastet ned lokalt`, "success");
@@ -705,7 +860,7 @@
     if (event === "extension.command") {
       const command = args?.data || null;
       if (command === CONFIG.MENU_MAIN_COMMAND || command === CONFIG.MENU_OPEN_COMMAND) {
-        setStatus("KOF2TXT åpnet fra meny", "neutral");
+        setStatus(`${CONFIG.APP_TITLE} åpnet fra meny`, "neutral");
       }
       return;
     }
@@ -717,6 +872,8 @@
     ui.convertAllBtn.addEventListener("click", processAllFiles);
     ui.localUploadBtn.addEventListener("click", () => ui.localFileInput.click());
     ui.localFileInput.addEventListener("change", (event) => processLocalFile(event.target.files?.[0]));
+    ui.projectUploadBtn.addEventListener("click", openProjectUploadExplorer);
+    ui.closeExplorerBtn.addEventListener("click", () => showExplorerPanel(false));
   }
 
   async function init() {
@@ -729,7 +886,7 @@
       await connectWorkspace();
       await ensureMenu();
 
-      setStatus("Klar — trykk \"Oppdater liste\" for å se KOF-filer", "neutral");
+      setStatus("Klar - trykk \"Oppdater liste\" for å se KOF-filer", "neutral");
 
       window.kof2txt = {
         state,
@@ -737,6 +894,7 @@
         processSelectedFile,
         processAllFiles,
         processLocalFile,
+        openProjectUploadExplorer,
         inspectApi() {
           if (!state.api) return "Ikke koblet";
           const r = {};

@@ -23,7 +23,8 @@
     busy: false,
     explorerApi: null,
     explorerVisible: false,
-    lastDownloadName: null
+    lastDownloadName: null,
+    lastAutoRefreshAt: 0
   };
 
   let ui = {};
@@ -708,6 +709,16 @@
     }
   }
 
+  async function refreshKofListOnOpen(reason = "open") {
+    const now = Date.now();
+    if (state.busy) return;
+    if (now - state.lastAutoRefreshAt < 1500) return;
+    state.lastAutoRefreshAt = now;
+
+    debug("Auto-refreshing KOF list", { reason });
+    await refreshKofList();
+  }
+
   async function downloadAndConvertFile(file) {
     const proxyRes = await callProxy("downloadKofFile", {
       token: state.accessToken,
@@ -861,6 +872,7 @@
       const command = args?.data || null;
       if (command === CONFIG.MENU_MAIN_COMMAND || command === CONFIG.MENU_OPEN_COMMAND) {
         setStatus(`${CONFIG.APP_TITLE} åpnet fra meny`, "neutral");
+        refreshKofListOnOpen("menu").catch(() => {});
       }
       return;
     }
@@ -886,11 +898,15 @@
       await connectWorkspace();
       await ensureMenu();
 
-      setStatus("Klar - trykk \"Oppdater liste\" for å se KOF-filer", "neutral");
+      setStatus("Klar - laster liste automatisk...", "working");
+      setTimeout(() => {
+        refreshKofListOnOpen("init").catch(() => {});
+      }, 0);
 
       window.kof2txt = {
         state,
         refreshKofList,
+        refreshKofListOnOpen,
         processSelectedFile,
         processAllFiles,
         processLocalFile,

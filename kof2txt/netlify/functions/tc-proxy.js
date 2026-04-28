@@ -226,7 +226,7 @@ function extractPossibleUrl(payload) {
 
 function extractUploadInfo(payload) {
   if (!payload || typeof payload !== "object") {
-    return { uploadId: null, fileId: null, uploadUrl: null, contents: [], completeUrl: null };
+    return { uploadId: null, uploadUrl: null, completeUrl: null };
   }
 
   return {
@@ -657,6 +657,7 @@ async function completeUpload({ token, projectLocation, uploadId, completeUrl, u
       headers: { "Content-Type": "application/json", Digest: digestHeader },
       body: { uploadId }
     });
+
     candidates.push({
       label: "upload-complete-query",
       url: `${base}/files/fs/upload/complete?uploadId=${encodeURIComponent(uploadId)}`,
@@ -944,22 +945,68 @@ async function handleListProjectKofFiles(body) {
 async function tryListProjectFilesCandidates({ token, projectId, projectLocation }) {
   const base = await getCoreBaseUrlAsync(projectLocation);
   const regions = await discoverRegions();
+  const searchProbe = await fetchJsonWithBearer(
+    `${base}/search?projectId=${encodeURIComponent(projectId)}&query=.kof&type=file`,
+    token
+  );
+  const searchFiles = searchProbe.ok && searchProbe.json
+    ? normalizeFilesFromAnyResponse(searchProbe.json).filter((f) => f && f.id && isKofName(f.name))
+    : [];
+  const seedFolderIds = Array.from(new Set(
+    searchFiles
+      .map((f) => f.parentId || null)
+      .filter(Boolean)
+  ));
+
+  const folderTree = await tryFolderTreeListing({
+    token,
+    projectId,
+    projectLocation,
+    seedFolderIds,
+    initialDiagnostics: [
+      {
+        name: "search-kof-seed",
+        url: `${base}/search?projectId=${encodeURIComponent(projectId)}&query=.kof&type=file`,
+        ok: searchProbe.ok,
+        status: searchProbe.status,
+        preview: shortText(searchProbe.text, 400),
+        seedFolderIds
+      }
+    ]
+  });
+
+  if (folderTree.ok && Array.isArray(folderTree.files) && folderTree.files.length) {
+    return {
+      ok: true,
+      action: "listProjectKofFiles",
+      project: { id: projectId, location: projectLocation },
+      resolvedBaseUrl: base,
+      source: folderTree.source,
+      candidatesTried: folderTree.candidatesTried,
+      files: folderTree.files,
+      diagnostics: folderTree.diagnostics,
+      sources: folderTree.sources
+    };
+  }
+
   const candidates = [
     {
-      name: "search-kof",
-      url: `${base}/search?projectId=${encodeURIComponent(projectId)}&query=.kof&type=file`
+      name: "projects-files-recursive",
+      url: `${base}/projects/${encodeURIComponent(projectId)}/files?recursive=true`
     },
     {
       name: "projects-files",
       url: `${base}/projects/${encodeURIComponent(projectId)}/files`
     },
     {
-      name: "projects-files-recursive",
-      url: `${base}/projects/${encodeURIComponent(projectId)}/files?recursive=true`
+      name: "search-kof",
+      url: `${base}/search?projectId=${encodeURIComponent(projectId)}&query=.kof&type=file`
     }
   ];
 
   const diagnostics = [];
+  const filesByKey = new Map();
+  const successSources = [];
 
   for (const candidate of candidates) {
     try {
@@ -984,16 +1031,17 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
         );
 
       if (files.length) {
-        return {
-          ok: true,
-          action: "listProjectKofFiles",
-          project: { id: projectId, location: projectLocation },
-          resolvedBaseUrl: base,
-          source: candidate.name,
-          candidatesTried: diagnostics.length,
-          files,
-          diagnostics
-        };
+        successSources.push({
+          name: candidate.name,
+          fileCount: files.length
+        });
+
+        for (const file of files) {
+          const key = `${file.id}|${file.parentId || ""}|${file.name}`;
+          if (!filesByKey.has(key)) {
+            filesByKey.set(key, file);
+          }
+        }
       }
     } catch (err) {
       diagnostics.push({
@@ -1005,6 +1053,26 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
     }
   }
 
+  const files = Array.from(filesByKey.values()).sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, {
+      sensitivity: "base"
+    })
+  );
+
+  if (files.length) {
+    return {
+      ok: true,
+      action: "listProjectKofFiles",
+      project: { id: projectId, location: projectLocation },
+      resolvedBaseUrl: base,
+      source: successSources.map((x) => x.name).join("+"),
+      candidatesTried: diagnostics.length,
+      files,
+      diagnostics,
+      sources: successSources
+    };
+  }
+
   return {
     ok: false,
     action: "listProjectKofFiles",
@@ -1014,6 +1082,101 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
     regionsDiscovered: regions,
     candidatesTried: diagnostics.length,
     diagnostics
+  };
+}
+
+async function tryFolderTreeListing({ token, projectId, projectLocation, seedFolderIds = [], initialDiagnostics = [] }) {
+  const base = await getCoreBaseUrlAsync(projectLocation);
+  const diagnostics = Array.isArray(initialDiagnostics) ? [...initialDiagnostics] : [];
+  const filesByKey = new Map();
+  const folderQueue = seedFolderIds.map((id) => ({ id, pathParts: [] }));
+  const visitedFolders = new Set();
+  const sources = [];
+
+  if (!folderQueue.length) {
+    return {
+      ok: false,
+      source: "folder-tree",
+      candidatesTried: diagnostics.length,
+      files: [],
+      diagnostics,
+      sources,
+      error: "Fant ingen seed-folderId-er fra eksisterende søkeresultater."
+    };
+  }
+
+  while (folderQueue.length) {
+    const current = folderQueue.shift();
+    if (!current?.id || visitedFolders.has(current.id)) continue;
+    visitedFolders.add(current.id);
+
+    const variants = [
+      {
+        name: "folders-items",
+        url: `${base}/folders/${encodeURIComponent(current.id)}/items`
+      },
+      {
+        name: "folders-items-recursive",
+        url: `${base}/folders/${encodeURIComponent(current.id)}/items?recursive=true`
+      }
+    ];
+
+    let currentItems = [];
+
+    for (const variant of variants) {
+      const res = await fetchJsonWithBearer(variant.url, token);
+      diagnostics.push({
+        name: `${variant.name}:${current.id}`,
+        url: variant.url,
+        ok: res.ok,
+        status: res.status,
+        preview: shortText(res.text, 400)
+      });
+
+      if (!res.ok || !res.json) continue;
+
+      currentItems = normalizeItemsFromAnyResponse(res.json, current.pathParts);
+      if (currentItems.length) {
+        sources.push({
+          name: variant.name,
+          folderId: current.id,
+          itemCount: currentItems.length
+        });
+        break;
+      }
+    }
+
+    for (const item of currentItems) {
+      if (item.kind === "folder") {
+        folderQueue.push({
+          id: item.id,
+          pathParts: item.name ? [...current.pathParts, item.name] : current.pathParts
+        });
+        continue;
+      }
+
+      if (!item.id || !isKofName(item.name)) continue;
+
+      const key = `${item.id}|${item.parentId || ""}|${item.name}`;
+      if (!filesByKey.has(key)) {
+        filesByKey.set(key, item);
+      }
+    }
+  }
+
+  const files = Array.from(filesByKey.values()).sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, {
+      sensitivity: "base"
+    })
+  );
+
+  return {
+    ok: files.length > 0,
+    source: "folder-tree",
+    candidatesTried: diagnostics.length,
+    files,
+    diagnostics,
+    sources
   };
 }
 
@@ -1048,6 +1211,13 @@ function normalizeFilesFromAnyResponse(payload) {
   const out = [];
   const seen = new Set();
   walkAny(payload, [], out, seen);
+  return out;
+}
+
+function normalizeItemsFromAnyResponse(payload, basePathParts = []) {
+  const out = [];
+  const seen = new Set();
+  walkAnyItem(payload, basePathParts, out, seen);
   return out;
 }
 
@@ -1134,6 +1304,130 @@ function walkAny(node, pathParts, out, seen) {
       walkAny(value, childPath, out, seen);
     }
   }
+}
+
+function walkAnyItem(node, pathParts, out, seen) {
+  if (node == null) return;
+
+  if (Array.isArray(node)) {
+    for (const item of node) walkAnyItem(item, pathParts, out, seen);
+    return;
+  }
+
+  if (typeof node !== "object") return;
+
+  const details = node.details && typeof node.details === "object"
+    ? node.details
+    : null;
+
+  const effectiveName =
+    node.name ||
+    node.fileName ||
+    node.filename ||
+    node.title ||
+    details?.name ||
+    details?.fileName ||
+    null;
+
+  const effectiveId =
+    node.id ||
+    node.fileId ||
+    node.versionId ||
+    details?.id ||
+    details?.fileId ||
+    null;
+
+  const rawType =
+    node.type ||
+    node.itemType ||
+    node.kind ||
+    node.objectType ||
+    node.resourceType ||
+    details?.type ||
+    details?.itemType ||
+    null;
+
+  const effectiveParentId =
+    node.parentId ||
+    node.parent?.id ||
+    details?.parentId ||
+    null;
+
+  const effectiveVersionId =
+    node.versionId ||
+    details?.versionId ||
+    null;
+
+  const effectivePath =
+    node.path ||
+    node.folderPath ||
+    node.fullPath ||
+    node.location ||
+    details?.path ||
+    null;
+
+  const normalizedKind = normalizeItemKind(rawType, node, details);
+  const childPath = effectiveName ? [...pathParts, effectiveName] : pathParts;
+
+  if (effectiveId && effectiveName && normalizedKind) {
+    const normalized = {
+      id: String(effectiveId),
+      name: String(effectiveName),
+      kind: normalizedKind,
+      versionId: effectiveVersionId ? String(effectiveVersionId) : null,
+      parentId: effectiveParentId ? String(effectiveParentId) : null,
+      path: effectivePath ? normalizePathValue(effectivePath) : buildPath(pathParts)
+    };
+
+    const key = `${normalized.id}|${normalized.kind}|${normalized.name}|${normalized.path}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(normalized);
+    }
+  }
+
+  for (const [key, value] of Object.entries(node)) {
+    if (
+      key === "parent" ||
+      key === "parents" ||
+      key === "_links" ||
+      key === "links" ||
+      key === "permissions"
+    ) {
+      continue;
+    }
+
+    if (Array.isArray(value) || (value && typeof value === "object")) {
+      walkAnyItem(value, childPath, out, seen);
+    }
+  }
+}
+
+function normalizeItemKind(rawType, node, details) {
+  const value = String(rawType || "").toLowerCase();
+
+  if (
+    value.includes("folder") ||
+    value === "dir" ||
+    value === "directory" ||
+    value === "container"
+  ) {
+    return "folder";
+  }
+
+  if (
+    value.includes("file") ||
+    value.includes("document") ||
+    value.includes("version")
+  ) {
+    return "file";
+  }
+
+  if (node?.hasChildren || details?.hasChildren) return "folder";
+  if (node?.children || details?.children) return "folder";
+  if (node?.size != null || details?.size != null) return "file";
+
+  return null;
 }
 
 function buildPath(parts) {

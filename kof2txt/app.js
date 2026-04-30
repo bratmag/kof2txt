@@ -215,7 +215,7 @@
     explorerFrame.hidden = true;
     explorerCard.appendChild(explorerFrame);
 
-    const statusCard = el("div", "card");
+    const statusCard = el("div", "card status-card");
     const status = el("div", "status", "Starter...");
     status.id = "statusBox";
     statusCard.appendChild(status);
@@ -233,9 +233,9 @@
 
     app.appendChild(titleCard);
     app.appendChild(projectCard);
+    app.appendChild(statusCard);
     app.appendChild(filesCard);
     app.appendChild(explorerCard);
-    app.appendChild(statusCard);
     app.appendChild(debugDetails);
 
     ui = {

@@ -6,7 +6,7 @@
     CONNECT_TIMEOUT_MS: 30000,
     TOKEN_WAIT_MS: 30000,
     PROXY_URL: "/.netlify/functions/tc-proxy",
-    APP_TITLE: "KOF2TXT",
+    APP_TITLE: "KOFConverter",
     AUTO_CONVERT_ON_OPEN: true,
     MENU_MAIN_COMMAND: "KOF2TXT_MAIN",
     MENU_OPEN_COMMAND: "KOF2TXT_OPEN"

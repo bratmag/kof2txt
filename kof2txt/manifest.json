@@ -1,7 +1,8 @@
 {
-  "title": "KOF2TXT",
+  "name": "KOFConverter",
+  "title": "KOFConverter",
   "icon": "https://kof2txt.netlify.app/icon.png",
   "url": "https://kof2txt.netlify.app/index.html",
-  "description": "Convert KOF to TXT",
+  "description": "Convert KOF to TXT or LandXML",
   "enabled": true
 }

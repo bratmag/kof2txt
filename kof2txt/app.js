@@ -174,21 +174,15 @@
     filesCard.appendChild(filesHeader);
 
     const btnRow = el("div", "btn-row");
-    const refreshBtn = el("button", null, "Oppdater liste");
-    const convertSelectedBtn = el("button", "primary", "Konverter valgt");
-    const convertAllBtn = el("button", null, "Konverter alle");
+    const refreshBtn = el("button", "primary", "Oppdater og konverter");
     const localUploadBtn = el("button", null, "Konverter lokal fil");
     const projectUploadBtn = el("button", null, "Last opp til Trimble Connect");
     const localFileInput = document.createElement("input");
     localFileInput.type = "file";
     localFileInput.accept = ".kof,text/plain";
     localFileInput.style.display = "none";
-    convertSelectedBtn.disabled = true;
-    convertAllBtn.disabled = true;
     projectUploadBtn.disabled = true;
     btnRow.appendChild(refreshBtn);
-    btnRow.appendChild(convertSelectedBtn);
-    btnRow.appendChild(convertAllBtn);
     btnRow.appendChild(localUploadBtn);
     btnRow.appendChild(projectUploadBtn);
     btnRow.appendChild(localFileInput);
@@ -244,8 +238,6 @@
       projectValue,
       fileCount,
       refreshBtn,
-      convertSelectedBtn,
-      convertAllBtn,
       localUploadBtn,
       projectUploadBtn,
       localFileInput,
@@ -288,7 +280,8 @@
 
     for (const file of state.fileList) {
       const isSelected = state.selectedFile?.id === file.id;
-      const row = el("label", `file-item${isSelected ? " selected" : ""}`);
+      const conversionState = getFileConversionState(file);
+      const row = el("label", `file-item ${conversionState.className}${isSelected ? " selected" : ""}`);
 
       const radio = document.createElement("input");
       radio.type = "radio";
@@ -305,8 +298,11 @@
       info.appendChild(el("div", "file-name", file.name || "(uten navn)"));
       if (file.path) info.appendChild(el("div", "file-meta", file.path));
 
+      const statusBadge = el("span", `file-status ${conversionState.className}`, conversionState.label);
+
       row.appendChild(radio);
       row.appendChild(info);
+      row.appendChild(statusBadge);
       ui.fileList.appendChild(row);
     }
   }
@@ -927,6 +923,7 @@
     if (!sourceTime) return true;
 
     return outputs.some((output) => {
+      if (output.localConversionCurrent) return true;
       const outputTime = parseFileTimestamp(output.modifiedOn);
       return outputTime != null && outputTime + 1000 >= sourceTime;
     });
@@ -934,6 +931,31 @@
 
   function getPendingKofFiles(files = state.fileList) {
     return (Array.isArray(files) ? files : []).filter((file) => !isConvertedOutputCurrent(file));
+  }
+
+  function getFileConversionState(file) {
+    if (isConvertedOutputCurrent(file)) {
+      return { className: "converted", label: "Konvertering OK" };
+    }
+
+    if (Array.isArray(file?.existingOutputs) && file.existingOutputs.length > 0) {
+      return { className: "outdated", label: "Ny versjon" };
+    }
+
+    return { className: "pending", label: "Venter" };
+  }
+
+  function markFileConverted(file, outName) {
+    if (!file || !outName) return;
+    const outputs = Array.isArray(file.existingOutputs) ? file.existingOutputs : [];
+    file.existingOutputs = [
+      ...outputs.filter((output) => output.name !== outName),
+      {
+        name: outName,
+        modifiedOn: new Date().toISOString(),
+        localConversionCurrent: true
+      }
+    ];
   }
 
   async function refreshKofList() {
@@ -1085,6 +1107,8 @@
       state.lastUploadResult = uploadResult;
 
       if (uploadResult.ok) {
+        markFileConverted(file, converted.outName);
+        renderFileList();
         setStatus(`Ferdig: ${converted.outName} er lastet opp til prosjektet`, "success");
         showHint("Den konverterte filen ble automatisk lastet opp tilbake til samme prosjektmappe i Trimble Connect.");
       } else {
@@ -1166,6 +1190,8 @@
 
           if (!uploadResult.ok) {
             triggerDownload(converted.outName, converted.text);
+          } else {
+            markFileConverted(file, converted.outName);
           }
 
           summary.push({
@@ -1187,6 +1213,7 @@
       const localDownloadCount = summary.filter((x) => x.ok && !x.uploadOk).length;
       state.lastDownloadName = okCount === 1 ? summary.find((x) => x.ok)?.outName || null : null;
       state.lastUploadResult = okCount === 1 ? summary.find((x) => x.ok)?.uploadResult || null : null;
+      renderFileList();
 
       if (failCount === 0) {
         if (uploadOkCount === okCount) {
@@ -1283,8 +1310,6 @@
 
   function wireUi() {
     ui.refreshBtn.addEventListener("click", () => refreshKofListOnOpen("manual-refresh"));
-    ui.convertSelectedBtn.addEventListener("click", processSelectedFile);
-    ui.convertAllBtn.addEventListener("click", processAllFiles);
     ui.localUploadBtn.addEventListener("click", () => ui.localFileInput.click());
     ui.localFileInput.addEventListener("change", (event) => processLocalFile(event.target.files?.[0]));
     ui.projectUploadBtn.addEventListener("click", openProjectUploadExplorer);

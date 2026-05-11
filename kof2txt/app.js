@@ -109,7 +109,7 @@
 
   function getXmlFilename(filename) {
     const name = String(filename || "output.kof").trim() || "output.kof";
-    return /\.kof$/i.test(name) ? name.replace(/\.kof$/i, ".xml") : `${name}.xml`;
+    return /\.(kof|sos|sosi)$/i.test(name) ? name.replace(/\.(kof|sos|sosi)$/i, ".xml") : `${name}.xml`;
   }
 
   function getUploadTargetFile() {
@@ -169,7 +169,7 @@
     titleCard.appendChild(el("div", "card-header", [
       el("h2", null, CONFIG.APP_TITLE)
     ]));
-    titleCard.appendChild(el("div", "subtitle", "Konverter .kof-filer til tekstformat"));
+    titleCard.appendChild(el("div", "subtitle", "Konverter .kof til TXT og .sos/.sosi til LandXML"));
 
     const projectCard = el("div", "card");
     projectCard.appendChild(el("div", "label", "Prosjekt"));
@@ -179,7 +179,7 @@
     const filesCard = el("div", "card");
     const filesHeader = el("div", "card-header", [
       el("div", null, [
-        el("div", "label", "KOF-filer")
+        el("div", "label", "KOF/SOSI-filer")
       ])
     ]);
     const fileCount = el("div", "file-count", "");
@@ -194,7 +194,7 @@
     const projectUploadBtn = el("button", null, "Trimble Connect datautforsker");
     const localFileInput = document.createElement("input");
     localFileInput.type = "file";
-    localFileInput.accept = ".kof,text/plain";
+    localFileInput.accept = ".kof,.sos,.sosi,text/plain";
     localFileInput.style.display = "none";
     stopBtn.style.display = "none";
     convertManualBtn.style.display = "none";
@@ -294,7 +294,7 @@
       : "";
 
     if (!state.fileList.length) {
-      const empty = el("div", "empty-state", "Trykk \"Oppdater liste\" for å hente KOF-filer fra prosjektet.");
+      const empty = el("div", "empty-state", "Trykk \"Oppdater liste\" for å hente KOF/SOSI-filer fra prosjektet.");
       ui.fileList.appendChild(empty);
       return;
     }
@@ -715,8 +715,26 @@
     return /^\s*09(?:_|\s+)91\b/im.test(String(kofText || ""));
   }
 
+  function detectSourceFileType(sourceText, fileName) {
+    const name = String(fileName || "");
+    const text = String(sourceText || "");
+
+    if (/\.(sos|sosi)$/i.test(name)) return "sosi";
+    if (/^\s*\.(HODE|PUNKT|KURVE)\b/im.test(text)) return "sosi";
+    return "kof";
+  }
+
   function convertKofFile(kofText, fileName) {
     const sourceText = String(kofText || "");
+    const sourceType = detectSourceFileType(sourceText, fileName);
+
+    if (sourceType === "sosi") {
+      return {
+        format: "xml",
+        outName: getXmlFilename(fileName),
+        text: sosiToLandXml(sourceText, { fileName })
+      };
+    }
 
     if (shouldConvertToLandXml(sourceText)) {
       return {
@@ -772,40 +790,69 @@
   }
 
   function kofToLandXml(kofText, options = {}) {
-    const fileName = String(options.fileName || "").replace(/\.kof$/i, "") || "KOF";
+    return buildLandXmlDocument(parseKofForLandXml(kofText), {
+      fileName: options.fileName,
+      fallbackName: "KOF",
+      layerPrefix: "Kof",
+      author: "kof2xml"
+    });
+  }
+
+  function sosiToLandXml(sosiText, options = {}) {
+    return buildLandXmlDocument(parseSosiForLandXml(sosiText), {
+      fileName: options.fileName,
+      fallbackName: "SOSI",
+      layerPrefix: "Sos",
+      author: "sosi2xml",
+      useLineCodeLayers: true,
+      planFeatureNamePrefix: "Plan feature",
+      lineColor: "0,0,255"
+    });
+  }
+
+  function buildLandXmlDocument(parsed, options = {}) {
+    const fileName = String(options.fileName || "")
+      .replace(/\.(kof|sos|sosi)$/i, "") || options.fallbackName || "KOF";
+    const author = options.author || "kof2xml";
+    const lineLayers = buildLandXmlLayerNames(parsed.lines, fileName, options);
     const now = new Date();
     const date = now.toISOString().slice(0, 10);
     const time = now.toISOString().slice(11, 19);
-    const parsed = parseKofForLandXml(kofText);
 
     return [
       "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
       `<LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.landxml.org/schema/LandXML-1.2 http://www.landxml.org/schema/LandXML-1.2/LandXML-1.2.xsd" version="1.2" date="${date}" time="${time}">`,
       "  <Project name=\"\" desc=\"\">",
       "    <Feature code=\"trimbleLayers\">",
-      "      <Feature code=\"trimbleLayer\">",
-      "        <Property label=\"name\" value=\"Punkter\" />",
-      "        <Property label=\"color\" value=\"255,255,255\" />",
-      "        <Property label=\"lineStyleName\" value=\"Gjennomgående\" />",
-      "        <Property label=\"lineWeight\" value=\"0\" />",
-      "      </Feature>",
-      "      <Feature code=\"trimbleLayer\">",
-      `        <Property label="name" value="Kof_${escapeXml(fileName)}_" />`,
-      "        <Property label=\"color\" value=\"255,255,255\" />",
-      "        <Property label=\"lineStyleName\" value=\"Gjennomgående\" />",
-      "        <Property label=\"lineWeight\" value=\"0\" />",
-      "      </Feature>",
+      ...(parsed.points.length ? [
+        [
+          "      <Feature code=\"trimbleLayer\">",
+          "        <Property label=\"name\" value=\"Punkter\" />",
+          "        <Property label=\"color\" value=\"255,255,255\" />",
+          "        <Property label=\"lineStyleName\" value=\"Gjennomgående\" />",
+          "        <Property label=\"lineWeight\" value=\"0\" />",
+          "      </Feature>"
+        ].join("\n")
+      ] : []),
+      ...lineLayers.map((layerName) => [
+        "      <Feature code=\"trimbleLayer\">",
+        `        <Property label="name" value="${escapeXml(layerName)}" />`,
+        "        <Property label=\"color\" value=\"255,255,255\" />",
+        "        <Property label=\"lineStyleName\" value=\"Gjennomgående\" />",
+        "        <Property label=\"lineWeight\" value=\"0\" />",
+        "      </Feature>"
+      ].join("\n")),
       "    </Feature>",
       "  </Project>",
       "  <Units>",
       "    <Metric linearUnit=\"meter\" widthUnit=\"meter\" heightUnit=\"meter\" diameterUnit=\"meter\" areaUnit=\"squareMeter\" volumeUnit=\"cubicMeter\" temperatureUnit=\"celsius\" pressureUnit=\"HPA\" angularUnit=\"radians\" directionUnit=\"radians\" elevationUnit=\"meter\" velocityUnit=\"kilometersPerHour\" />",
       "  </Units>",
       `  <Application name="${escapeXml(CONFIG.APP_TITLE)}" manufacturer="" version="1.0" timeStamp="${date}T${time}">`,
-      `    <Author createdBy="kof2xml" timeStamp="${date}T${time}" />`,
+      `    <Author createdBy="${escapeXml(author)}" timeStamp="${date}T${time}" />`,
       "  </Application>",
       "  <FeatureDictionary name=\"ISO15143-4\" />",
       buildLandXmlCgPoints(parsed.points),
-      buildLandXmlPlanFeatures(parsed.lines, fileName),
+      buildLandXmlPlanFeatures(parsed.lines, fileName, options),
       "</LandXML>"
     ].filter(Boolean).join("\n");
   }
@@ -852,6 +899,214 @@
     };
   }
 
+  function parseSosiForLandXml(sosiText) {
+    const lines = String(sosiText || "").split(/\r?\n/);
+    const points = [];
+    const lineFeatures = [];
+    let unit = 1;
+    let current = null;
+    let coordMode = false;
+    let pointIndex = 0;
+    let curveIndex = 0;
+    let lastLineFeature = null;
+    let lastCompletedObjectType = null;
+
+    function finishObject() {
+      if (!current) return;
+
+      const coords = buildSosiCoordinates(current.coordValues, current.coordKey, unit);
+      let producedLine = false;
+      if (current.type === "PUNKT" && coords.length) {
+        pointIndex += 1;
+        const name = buildSosiPointName(current, pointIndex);
+        points.push({
+          rawName: name,
+          name,
+          n: coords[0].n,
+          e: coords[0].e,
+          h: coords[0].h,
+          code: getSosiObjectCode(current),
+          attributes: getSosiObjectAttributes(current)
+        });
+      }
+
+      if (current.type === "KURVE" && coords.length >= 2 && hasUsableLineGeometry(coords)) {
+        curveIndex += 1;
+        const linePoints = coords.map((coord, index) => ({
+          rawName: `K${curveIndex}_${String(index + 1).padStart(3, "0")}`,
+          name: `K${curveIndex}_${String(index + 1).padStart(3, "0")}`,
+          n: coord.n,
+          e: coord.e,
+          h: coord.h,
+          code: getSosiObjectCode(current)
+        }));
+        lastLineFeature = {
+          pts: linePoints,
+          name: getSosiObjectName(current),
+          code: getSosiObjectCode(current),
+          attributes: getSosiObjectAttributes(current)
+        };
+        lineFeatures.push(lastLineFeature);
+        producedLine = true;
+      } else if (current.renamePreviousLine && lastLineFeature && getSosiObjectName(current)) {
+        lastLineFeature.name = getSosiObjectName(current);
+        lastLineFeature.attributes = getSosiObjectAttributes(current);
+      } else if (current.type === "KURVE") {
+        lastLineFeature = null;
+      }
+
+      lastCompletedObjectType = producedLine ? "KURVE" : current.type;
+      current = null;
+      coordMode = false;
+    }
+
+    for (const rawLine of lines) {
+      const line = String(rawLine || "").trim();
+      if (!line) continue;
+
+      const unitMatch = line.match(/^\.\.+ENHET\s+(.+)$/i);
+      if (unitMatch) {
+        const parsedUnit = parseNumber(unitMatch[1]);
+        if (parsedUnit != null && parsedUnit > 0) unit = parsedUnit;
+        continue;
+      }
+
+      const objectMatch = line.match(/^\.(?!\.)(\S+)\s*([^.]*)$/);
+      if (objectMatch) {
+        finishObject();
+        const objectType = objectMatch[1].toUpperCase();
+        current = /^(PUNKT|KURVE|FLATE|TEKST|SYMBOL)$/i.test(objectType)
+          ? {
+              type: objectType,
+              id: cleanSosiObjectId(objectMatch[2]),
+              attrs: {},
+              attrList: [],
+              coordKey: null,
+              coordValues: [],
+              renamePreviousLine: /^(FLATE|TEKST|SYMBOL)$/i.test(objectType) && lastCompletedObjectType === "KURVE"
+            }
+          : null;
+        continue;
+      }
+
+      if (!current) continue;
+
+      const attrMatch = line.match(/^\.\.+([^\s]+)\s*(.*)$/);
+      if (attrMatch) {
+        const key = attrMatch[1].toUpperCase();
+        const value = String(attrMatch[2] || "").trim();
+        coordMode = isSosiCoordinateKey(key);
+
+        if (coordMode) {
+          current.coordKey = key;
+          current.coordValues.push(...extractSosiCoordinateNumbers(value));
+        } else {
+          current.attrs[key] = value;
+          current.attrList.push({
+            label: attrMatch[1].trim(),
+            value
+          });
+        }
+        continue;
+      }
+
+      if (coordMode) {
+        current.coordValues.push(...extractSosiCoordinateNumbers(line));
+      }
+    }
+
+    finishObject();
+
+    return {
+      points: dedupeLandXmlPointNames(points),
+      lines: lineFeatures
+    };
+  }
+
+  function cleanSosiObjectId(value) {
+    return String(value || "").replace(/[:\s]+$/g, "").trim();
+  }
+
+  function isSosiCoordinateKey(key) {
+    const normalized = normalizeSosiKey(key);
+    return normalized === "NOH" || normalized === "NO";
+  }
+
+  function normalizeSosiKey(key) {
+    return repairUtf8Mojibake(String(key || ""))
+      .toUpperCase()
+      .replace(/\u00c6/g, "AE")
+      .replace(/\u00d8/g, "O")
+      .replace(/\u00c5/g, "A")
+      .replace(/[?\ufffd]/g, "O")
+      .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function extractSosiNumbers(value) {
+    return String(value || "")
+      .split(/\s+/)
+      .filter((part) => String(part || "").trim())
+      .map((part) => parseNumber(part))
+      .filter((number) => number != null);
+  }
+
+  function extractSosiCoordinateNumbers(value) {
+    const coordinatePart = String(value || "").replace(/\s+\.\.\..*$/u, "");
+    return extractSosiNumbers(coordinatePart);
+  }
+
+  function buildSosiCoordinates(values, coordKey, unit) {
+    const numbers = Array.isArray(values) ? values : [];
+    const normalizedKey = normalizeSosiKey(coordKey);
+    const dimensions = normalizedKey === "NO" ? 2 : 3;
+    const coords = [];
+
+    for (let index = 0; index + dimensions - 1 < numbers.length; index += dimensions) {
+      coords.push({
+        n: scaleSosiCoordinate(numbers[index], unit),
+        e: scaleSosiCoordinate(numbers[index + 1], unit),
+        h: dimensions === 3 ? scaleSosiCoordinate(numbers[index + 2], unit) : 0
+      });
+    }
+
+    return coords;
+  }
+
+  function hasUsableLineGeometry(coords) {
+    return coords.some((coord, index) =>
+      index > 0 && distance2d(coords[index - 1], coord) > 0
+    );
+  }
+
+  function scaleSosiCoordinate(value, unit) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    return n * (Number.isFinite(unit) && unit > 0 ? unit : 1);
+  }
+
+  function buildSosiPointName(object, fallbackIndex) {
+    const id = cleanSosiObjectId(object?.id);
+    return id || String(fallbackIndex);
+  }
+
+  function getSosiObjectCode(object) {
+    const attrs = object?.attrs || {};
+    return attrs.OBJTYPE || attrs.LTEMA || attrs.TEMA || "";
+  }
+
+  function getSosiObjectName(object) {
+    return String(object?.attrs?.OBJTYPE || "").trim();
+  }
+
+  function getSosiObjectAttributes(object) {
+    return (Array.isArray(object?.attrList) ? object.attrList : [])
+      .filter((attribute) => attribute && attribute.label)
+      .map((attribute) => ({
+        label: String(attribute.label || "").trim(),
+        value: String(attribute.value ?? "").trim()
+      }));
+  }
+
   function dedupeLandXmlPointNames(points) {
     const totals = {};
     for (const point of points) {
@@ -876,32 +1131,107 @@
     const inner = points.map((point) => {
       const coords = `${formatLandXmlNumber(point.n)} ${formatLandXmlNumber(point.e)} ${formatLandXmlNumber(point.h)}`;
       const name = escapeXml(point.name);
-      return `    <CgPoint name="${name}" desc="${name}" featureRef="Punkter">${coords}</CgPoint>`;
+      const attributesXml = buildLandXmlTrimbleCadFeature(point.attributes, "      ");
+
+      if (!attributesXml) {
+        return `    <CgPoint name="${name}" desc="${name}" featureRef="Punkter">${coords}</CgPoint>`;
+      }
+
+      return [
+        `    <CgPoint name="${name}" desc="${name}" featureRef="Punkter">`,
+        `      ${coords}`,
+        attributesXml,
+        "    </CgPoint>"
+      ].join("\n");
     }).join("\n");
 
     return `  <CgPoints>\n${inner}\n  </CgPoints>`;
   }
 
-  function buildLandXmlPlanFeatures(lines, fileName) {
+  function buildLandXmlPropertyRows(attributes, indent = "") {
+    return (Array.isArray(attributes) ? attributes : [])
+      .filter((attribute) => attribute && attribute.label)
+      .map((attribute) =>
+        `${indent}  <Property label="${escapeXml(attribute.label)}" value="${escapeXml(attribute.value ?? "")}" />`
+      );
+  }
+
+  function buildLandXmlTrimbleCadFeature(attributes, indent = "", leadingRows = []) {
+    const rows = [
+      ...(Array.isArray(leadingRows) ? leadingRows : []),
+      ...buildLandXmlPropertyRows(attributes, indent)
+    ];
+    if (!rows.length) return "";
+
+    return [
+      `${indent}<Feature code="trimbleCADProperties">`,
+      ...rows,
+      `${indent}</Feature>`
+    ].join("\n");
+  }
+
+  function buildLandXmlLayerNames(lines, fileName, options = {}) {
+    const layerPrefix = options.layerPrefix || "Kof";
+    const useLineCodeLayers = !!options.useLineCodeLayers;
+    const fallbackLayer = `${layerPrefix}_${fileName}_`;
+    const names = [];
+
+    for (const line of Array.isArray(lines) ? lines : []) {
+      const code = String(line?.code || "").trim();
+      const layerName = useLineCodeLayers && code
+        ? `${layerPrefix}_${fileName}_${code}`
+        : fallbackLayer;
+      if (!names.includes(layerName)) names.push(layerName);
+    }
+
+    return names.length ? names : [fallbackLayer];
+  }
+
+  function buildLandXmlPlanFeatures(lines, fileName, options = {}) {
     if (!lines.length) return "";
+    const layerPrefix = options.layerPrefix || "Kof";
+    const useLineCodeLayers = !!options.useLineCodeLayers;
+    const namePrefix = options.planFeatureNamePrefix || "";
+    const lineColor = options.lineColor || "144,238,144";
+    const featureNameCounts = {};
 
     const features = lines.map((line, index) => {
-      const name = `${escapeXml(fileName)}_${index + 1}`;
-      const layer = `Kof_${escapeXml(fileName)}_`;
+      const rawCode = String(line?.code || "").trim();
+      const name = buildLandXmlPlanFeatureName(line, index, fileName, namePrefix, featureNameCounts);
+      const rawLayer = useLineCodeLayers && rawCode
+        ? `${layerPrefix}_${fileName}_${rawCode}`
+        : `${layerPrefix}_${fileName}_`;
+      const layer = escapeXml(rawLayer);
+      const trimbleCadXml = buildLandXmlTrimbleCadFeature(line.attributes, "      ", [
+        `        <Property label="layer" value="${layer}" />`,
+        `        <Property label="color" value="${escapeXml(lineColor)}" />`
+      ]);
       return [
         `    <PlanFeature name="${name}">`,
         "      <CoordGeom>",
         buildLandXmlCoordGeom(line.pts),
         "      </CoordGeom>",
-        "      <Feature code=\"trimbleCADProperties\">",
-        `        <Property label="layer" value="${layer}" />`,
-        "        <Property label=\"color\" value=\"144,238,144\" />",
-        "      </Feature>",
+        trimbleCadXml,
         "    </PlanFeature>"
-      ].join("\n");
+      ].filter(Boolean).join("\n");
     }).join("\n");
 
     return `  <PlanFeatures>\n${features}\n  </PlanFeatures>`;
+  }
+
+  function buildLandXmlPlanFeatureName(line, index, fileName, namePrefix, featureNameCounts) {
+    const explicitName = String(line?.name || "").trim();
+    if (explicitName) {
+      featureNameCounts[explicitName] = (featureNameCounts[explicitName] || 0) + 1;
+      const count = featureNameCounts[explicitName];
+      return count === 1
+        ? escapeXml(explicitName)
+        : `${escapeXml(explicitName)}(${count})`;
+    }
+
+    return namePrefix
+      ? `${escapeXml(namePrefix)} ${index + 1}`
+      : `${escapeXml(fileName)}_${index + 1}`;
   }
 
   function buildLandXmlCoordGeom(points) {
@@ -1008,7 +1338,7 @@
       setBusy(true);
       showHint(null, false);
       await ensureReady();
-      setStatus("Henter KOF-filer fra prosjektet...", "working");
+      setStatus("Henter KOF/SOSI-filer fra prosjektet...", "working");
 
       const proxyRes = await callProxy("listProjectKofFiles", {
         token: state.accessToken,
@@ -1039,14 +1369,14 @@
       renderFileList();
 
       if (state.fileList.length === 0) {
-        setStatus("Ingen KOF-filer funnet i prosjektet", "neutral");
+        setStatus("Ingen KOF/SOSI-filer funnet i prosjektet", "neutral");
       } else {
         const pendingCount = getPendingKofFiles().length;
         const convertedCount = state.fileList.length - pendingCount;
         const suffix = convertedCount
           ? `, ${pendingCount} mangler konvertering`
           : "";
-        setStatus(`Fant ${state.fileList.length} KOF-fil${state.fileList.length === 1 ? "" : "er"}${suffix}`, "success");
+        setStatus(`Fant ${state.fileList.length} KOF/SOSI-fil${state.fileList.length === 1 ? "" : "er"}${suffix}`, "success");
       }
 
       const pendingFiles = getPendingKofFiles();
@@ -1103,7 +1433,7 @@
 
     state.autoConvertInProgress = true;
     try {
-      setStatus(`Starter automatisk konvertering av ${pendingFiles.length} KOF-fil${pendingFiles.length === 1 ? "" : "er"}...`, "working");
+      setStatus(`Starter automatisk konvertering av ${pendingFiles.length} KOF/SOSI-fil${pendingFiles.length === 1 ? "" : "er"}...`, "working");
       await processAllFiles({ source: "auto-open", files: pendingFiles });
     } finally {
       state.autoConvertInProgress = false;
@@ -1121,7 +1451,7 @@
 
     if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy svarte med HTTP ${proxyRes.status}`);
     const result = proxyRes.json;
-    if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned KOF-fil");
+    if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned KOF/SOSI-fil");
 
     const converted = convertKofFile(result.text || "", result.file?.name || file.name || "output.kof");
     return { ...converted, result };
@@ -1192,7 +1522,7 @@
   async function processManualSelectedFiles() {
     const selectedFiles = state.fileList.filter((file) => state.manualSelectedFileIds.has(file.id));
     if (!selectedFiles.length) {
-      setStatus("Velg minst en KOF-fil fÃ¸rst", "error");
+      setStatus("Velg minst en KOF/SOSI-fil fÃ¸rst", "error");
       return;
     }
     await processAllFiles({ source: "manual-selected", files: selectedFiles, skipExisting: false });
@@ -1216,7 +1546,7 @@
       const skippedCount = candidateFiles.length - filesToProcess.length;
 
       if (!filesToProcess.length) {
-        setStatus("Alle KOF-filer har allerede en konvertert fil i samme mappe", "success");
+        setStatus("Alle KOF/SOSI-filer har allerede en konvertert fil i samme mappe", "success");
         showHint("Ingen filer ble konvertert pÃ¥ nytt. Slett eksisterende TXT/XML i Trimble Connect hvis du vil tvinge en ny konvertering.");
         setDebug({
           action: options.source === "auto-open" ? "autoConvertAllOnOpen" : "convertAll",
@@ -1307,7 +1637,7 @@
           setStatus(`Ferdig! ${okCount} fil${okCount === 1 ? "" : "er"} konvertert og lastet opp${skippedCount ? ` (${skippedCount} hoppet over)` : ""}`, "success");
           showHint(
             skippedCount
-              ? `Alle nye filer ble lastet opp. ${skippedCount} KOF-fil${skippedCount === 1 ? "" : "er"} hadde allerede TXT/XML i samme mappe og ble ikke konvertert pÃ¥ nytt.`
+              ? `Alle nye filer ble lastet opp. ${skippedCount} KOF/SOSI-fil${skippedCount === 1 ? "" : "er"} hadde allerede TXT/XML i samme mappe og ble ikke konvertert pÃ¥ nytt.`
               : "Alle konverterte filer ble automatisk lastet opp tilbake til samme prosjektmapper i Trimble Connect."
           );
         } else {
@@ -1353,7 +1683,7 @@
       if (!file) return;
 
       setStatus(`Konverterer lokal fil ${file.name}...`, "working");
-      const kofText = await file.text();
+      const kofText = await readSourceFileText(file);
       const converted = convertKofFile(kofText || "", file.name || "output.kof");
       const outName = converted.outName;
       state.lastDownloadName = outName;
@@ -1377,6 +1707,39 @@
       if (ui.localFileInput) ui.localFileInput.value = "";
       setBusy(false);
     }
+  }
+
+  async function readSourceFileText(file) {
+    if (!file?.arrayBuffer) return file?.text ? await file.text() : "";
+    const buffer = await file.arrayBuffer();
+    return decodeSourceText(buffer);
+  }
+
+  function decodeSourceText(buffer) {
+    const utf8 = new TextDecoder("utf-8").decode(buffer);
+    if (!utf8.includes("\uFFFD")) return utf8;
+
+    try {
+      return repairUtf8Mojibake(new TextDecoder("windows-1252").decode(buffer));
+    } catch (_err) {
+      return utf8;
+    }
+  }
+
+  function repairUtf8Mojibake(text) {
+    return String(text || "")
+      .replace(/\u00c3[\u0098\u02dc]/g, "Ø")
+      .replace(/\u00c3\u00b8/g, "ø")
+      .replace(/\u00c3[\u0085\u2026]/g, "Å")
+      .replace(/\u00c3\u00a5/g, "å")
+      .replace(/\u00c3\u0086/g, "Æ")
+      .replace(/\u00c3\u00a6/g, "æ")
+      .replace(/Ã˜/g, "Ø")
+      .replace(/Ã¸/g, "ø")
+      .replace(/Ã…/g, "Å")
+      .replace(/Ã¥/g, "å")
+      .replace(/Ã†/g, "Æ")
+      .replace(/Ã¦/g, "æ");
   }
 
   function onWorkspaceEvent(event, args) {

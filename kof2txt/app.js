@@ -109,7 +109,7 @@
 
   function getXmlFilename(filename) {
     const name = String(filename || "output.kof").trim() || "output.kof";
-    return /\.(kof|sos|sosi)$/i.test(name) ? name.replace(/\.(kof|sos|sosi)$/i, ".xml") : `${name}.xml`;
+    return /\.(kof|sos|sosi|gml)$/i.test(name) ? name.replace(/\.(kof|sos|sosi|gml)$/i, ".xml") : `${name}.xml`;
   }
 
   function getUploadTargetFile() {
@@ -169,7 +169,7 @@
     titleCard.appendChild(el("div", "card-header", [
       el("h2", null, CONFIG.APP_TITLE)
     ]));
-    titleCard.appendChild(el("div", "subtitle", "Konverter .kof til TXT og .sos/.sosi til LandXML"));
+    titleCard.appendChild(el("div", "subtitle", "Konverter .kof til TXT/XML og .sos/.sosi/.gml til LandXML"));
 
     const projectCard = el("div", "card");
     projectCard.appendChild(el("div", "label", "Prosjekt"));
@@ -179,7 +179,7 @@
     const filesCard = el("div", "card");
     const filesHeader = el("div", "card-header", [
       el("div", null, [
-        el("div", "label", "KOF/SOSI-filer")
+        el("div", "label", "KOF/SOSI/GML-filer")
       ])
     ]);
     const fileCount = el("div", "file-count", "");
@@ -194,7 +194,7 @@
     const projectUploadBtn = el("button", null, "Trimble Connect datautforsker");
     const localFileInput = document.createElement("input");
     localFileInput.type = "file";
-    localFileInput.accept = ".kof,.sos,.sosi,text/plain";
+    localFileInput.accept = ".kof,.sos,.sosi,.gml,text/plain,application/gml+xml,application/xml";
     localFileInput.style.display = "none";
     stopBtn.style.display = "none";
     convertManualBtn.style.display = "none";
@@ -294,7 +294,7 @@
       : "";
 
     if (!state.fileList.length) {
-      const empty = el("div", "empty-state", "Trykk \"Oppdater liste\" for å hente KOF/SOSI-filer fra prosjektet.");
+      const empty = el("div", "empty-state", "Trykk \"Oppdater liste\" for å hente KOF/SOSI/GML-filer fra prosjektet.");
       ui.fileList.appendChild(empty);
       return;
     }
@@ -719,6 +719,8 @@
     const name = String(fileName || "");
     const text = String(sourceText || "");
 
+    if (/\.gml$/i.test(name)) return "gml";
+    if (/<(?:\w+:)?FeatureCollection\b/i.test(text) || /<(?:\w+:)?(LineString|Point|Polygon)\b/i.test(text)) return "gml";
     if (/\.(sos|sosi)$/i.test(name)) return "sosi";
     if (/^\s*\.(HODE|PUNKT|KURVE)\b/im.test(text)) return "sosi";
     return "kof";
@@ -733,6 +735,14 @@
         format: "xml",
         outName: getXmlFilename(fileName),
         text: sosiToLandXml(sourceText, { fileName })
+      };
+    }
+
+    if (sourceType === "gml") {
+      return {
+        format: "xml",
+        outName: getXmlFilename(fileName),
+        text: gmlToLandXml(sourceText, { fileName })
       };
     }
 
@@ -810,9 +820,21 @@
     });
   }
 
+  function gmlToLandXml(gmlText, options = {}) {
+    return buildLandXmlDocument(parseGmlForLandXml(gmlText), {
+      fileName: options.fileName,
+      fallbackName: "GML",
+      layerPrefix: "Gml",
+      author: "gml2xml",
+      useLineCodeLayers: true,
+      planFeatureNamePrefix: "Plan feature",
+      lineColor: "0,0,255"
+    });
+  }
+
   function buildLandXmlDocument(parsed, options = {}) {
     const fileName = String(options.fileName || "")
-      .replace(/\.(kof|sos|sosi)$/i, "") || options.fallbackName || "KOF";
+      .replace(/\.(kof|sos|sosi|gml)$/i, "") || options.fallbackName || "KOF";
     const author = options.author || "kof2xml";
     const lineLayers = buildLandXmlLayerNames(parsed.lines, fileName, options);
     const now = new Date();
@@ -1021,6 +1043,187 @@
       points: dedupeLandXmlPointNames(points),
       lines: lineFeatures
     };
+  }
+
+  function parseGmlForLandXml(gmlText) {
+    const xml = repairUtf8Mojibake(String(gmlText || ""));
+    const points = [];
+    const lineFeatures = [];
+    let pointIndex = 0;
+    let lineIndex = 0;
+
+    const members = extractGmlFeatureMembers(xml);
+    const featureBlocks = members.length ? members : [{ type: "GML", body: xml }];
+
+    for (const feature of featureBlocks) {
+      const featureType = feature.type || "GML";
+      const featureAttributes = getGmlFeatureAttributes(feature);
+      const lineBlocks = [
+        ...extractXmlBlocks(feature.body, "LineString"),
+        ...extractXmlBlocks(feature.body, "LinearRing")
+      ];
+
+      for (const block of lineBlocks) {
+        const coordinateSets = extractGmlCoordinateSets(block);
+        for (const coords of coordinateSets) {
+          if (coords.length < 2 || !hasUsableLineGeometry(coords)) continue;
+          lineIndex += 1;
+          lineFeatures.push({
+            pts: coords.map((coord, index) => ({
+              rawName: `G${lineIndex}_${String(index + 1).padStart(3, "0")}`,
+              name: `G${lineIndex}_${String(index + 1).padStart(3, "0")}`,
+              n: coord.n,
+              e: coord.e,
+              h: coord.h,
+              code: featureType
+            })),
+            code: featureType,
+            attributes: featureAttributes
+          });
+        }
+      }
+
+      const pointBlocks = extractXmlBlocks(feature.body, "Point");
+      for (const block of pointBlocks) {
+        const coordinateSets = extractGmlCoordinateSets(block);
+        for (const coords of coordinateSets) {
+          if (!coords.length) continue;
+          pointIndex += 1;
+          const name = `${featureType}_${pointIndex}`;
+          points.push({
+            rawName: name,
+            name,
+            n: coords[0].n,
+            e: coords[0].e,
+            h: coords[0].h,
+            code: featureType,
+            attributes: featureAttributes
+          });
+        }
+      }
+    }
+
+    return {
+      points: dedupeLandXmlPointNames(points),
+      lines: lineFeatures
+    };
+  }
+
+  function extractGmlFeatureMembers(xml) {
+    const members = [];
+    for (const memberMatch of String(xml || "").matchAll(/<(?:[A-Za-z_][\w.-]*:)?featureMember\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?featureMember>/gi)) {
+      const memberBody = memberMatch[1] || "";
+      const featureMatch = memberBody.match(/^\s*<((?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*))\b([^>]*)>([\s\S]*?)<\/\1>\s*$/);
+      if (featureMatch) {
+        members.push({
+          type: localXmlName(featureMatch[2]),
+          attrsText: featureMatch[3] || "",
+          body: featureMatch[4] || ""
+        });
+      } else {
+        members.push({ type: "GML", body: memberBody });
+      }
+    }
+    return members;
+  }
+
+  function getGmlFeatureAttributes(feature) {
+    const attributes = [];
+    const idMatch = String(feature?.attrsText || "").match(/\b(?:gml:)?id\s*=\s*["']([^"']+)["']/i);
+    if (idMatch) {
+      attributes.push({
+        label: "gml:id",
+        value: decodeXmlText(idMatch[1])
+      });
+    }
+
+    for (const childMatch of String(feature?.body || "").matchAll(/<((?:[^\s<>/:]+:)?([^\s<>/]+))(?=[\s>/])[^>]*>([\s\S]*?)<\/\1>/g)) {
+      const rawValue = childMatch[3] || "";
+      if (/<[^>]+>/.test(rawValue)) continue;
+      const value = decodeXmlText(rawValue);
+      if (!value) continue;
+      attributes.push({
+        label: localXmlName(childMatch[2]),
+        value
+      });
+    }
+
+    return attributes;
+  }
+
+  function extractXmlBlocks(xml, localName) {
+    const escapedName = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?${escapedName}\\b[^>]*>[\\s\\S]*?<\\/(?:[A-Za-z_][\\w.-]*:)?${escapedName}>`, "gi");
+    return String(xml || "").match(pattern) || [];
+  }
+
+  function extractGmlCoordinateSets(block) {
+    const coordinateSets = [];
+    const dimensions = getGmlSrsDimension(block);
+
+    for (const posListMatch of String(block || "").matchAll(/<(?:[A-Za-z_][\w.-]*:)?posList\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?posList>/gi)) {
+      const posListDimensions = getGmlSrsDimension(posListMatch[1] || "") || dimensions;
+      const coords = buildGmlCoordinates(extractSosiNumbers(stripXmlTags(posListMatch[2])), posListDimensions || dimensions);
+      if (coords.length) coordinateSets.push(coords);
+    }
+
+    const withoutPosLists = String(block || "").replace(/<(?:[A-Za-z_][\w.-]*:)?posList\b[^>]*>[\s\S]*?<\/(?:[A-Za-z_][\w.-]*:)?posList>/gi, "");
+    const posCoords = [];
+    for (const posMatch of withoutPosLists.matchAll(/<(?:[A-Za-z_][\w.-]*:)?pos\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?pos>/gi)) {
+      const posDimensions = getGmlSrsDimension(posMatch[1] || "") || dimensions;
+      const coords = buildGmlCoordinates(extractSosiNumbers(stripXmlTags(posMatch[2])), posDimensions || dimensions);
+      if (coords.length) posCoords.push(coords[0]);
+    }
+    if (posCoords.length) coordinateSets.push(posCoords);
+
+    return coordinateSets;
+  }
+
+  function getGmlSrsDimension(text) {
+    const match = String(text || "").match(/\bsrsDimension\s*=\s*["']?(\d+)/i);
+    const dimension = match ? Number(match[1]) : null;
+    return Number.isFinite(dimension) && dimension >= 2 ? dimension : null;
+  }
+
+  function buildGmlCoordinates(numbers, dimensions = null) {
+    const coords = [];
+    const inferredDimensions = dimensions || (numbers.length % 3 === 0 ? 3 : 2);
+    const stride = inferredDimensions >= 3 ? 3 : 2;
+    for (let index = 0; index + stride - 1 < numbers.length; index += stride) {
+      const e = Number(numbers[index]);
+      const n = Number(numbers[index + 1]);
+      const h = stride === 3 ? Number(numbers[index + 2]) : 0;
+      if (!Number.isFinite(n) || !Number.isFinite(e)) continue;
+      coords.push({
+        n,
+        e,
+        h: Number.isFinite(h) ? h : 0
+      });
+    }
+    return coords;
+  }
+
+  function stripXmlTags(value) {
+    return String(value || "").replace(/<[^>]*>/g, " ");
+  }
+
+  function decodeXmlText(value) {
+    return repairUtf8Mojibake(String(value || ""))
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+      .replace(/&#x([0-9a-f]+);/gi, (_match, hex) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_match, number) => String.fromCodePoint(parseInt(number, 10)))
+      .replace(/&quot;/g, "\"")
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function localXmlName(name) {
+    return String(name || "").split(":").pop() || "";
   }
 
   function cleanSosiObjectId(value) {
@@ -1338,7 +1541,7 @@
       setBusy(true);
       showHint(null, false);
       await ensureReady();
-      setStatus("Henter KOF/SOSI-filer fra prosjektet...", "working");
+      setStatus("Henter KOF/SOSI/GML-filer fra prosjektet...", "working");
 
       const proxyRes = await callProxy("listProjectKofFiles", {
         token: state.accessToken,
@@ -1369,14 +1572,14 @@
       renderFileList();
 
       if (state.fileList.length === 0) {
-        setStatus("Ingen KOF/SOSI-filer funnet i prosjektet", "neutral");
+        setStatus("Ingen KOF/SOSI/GML-filer funnet i prosjektet", "neutral");
       } else {
         const pendingCount = getPendingKofFiles().length;
         const convertedCount = state.fileList.length - pendingCount;
         const suffix = convertedCount
           ? `, ${pendingCount} mangler konvertering`
           : "";
-        setStatus(`Fant ${state.fileList.length} KOF/SOSI-fil${state.fileList.length === 1 ? "" : "er"}${suffix}`, "success");
+        setStatus(`Fant ${state.fileList.length} KOF/SOSI/GML-fil${state.fileList.length === 1 ? "" : "er"}${suffix}`, "success");
       }
 
       const pendingFiles = getPendingKofFiles();
@@ -1433,7 +1636,7 @@
 
     state.autoConvertInProgress = true;
     try {
-      setStatus(`Starter automatisk konvertering av ${pendingFiles.length} KOF/SOSI-fil${pendingFiles.length === 1 ? "" : "er"}...`, "working");
+      setStatus(`Starter automatisk konvertering av ${pendingFiles.length} KOF/SOSI/GML-fil${pendingFiles.length === 1 ? "" : "er"}...`, "working");
       await processAllFiles({ source: "auto-open", files: pendingFiles });
     } finally {
       state.autoConvertInProgress = false;
@@ -1451,7 +1654,7 @@
 
     if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy svarte med HTTP ${proxyRes.status}`);
     const result = proxyRes.json;
-    if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned KOF/SOSI-fil");
+    if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned KOF/SOSI/GML-fil");
 
     const converted = convertKofFile(result.text || "", result.file?.name || file.name || "output.kof");
     return { ...converted, result };
@@ -1522,7 +1725,7 @@
   async function processManualSelectedFiles() {
     const selectedFiles = state.fileList.filter((file) => state.manualSelectedFileIds.has(file.id));
     if (!selectedFiles.length) {
-      setStatus("Velg minst en KOF/SOSI-fil fÃ¸rst", "error");
+      setStatus("Velg minst en KOF/SOSI/GML-fil fÃ¸rst", "error");
       return;
     }
     await processAllFiles({ source: "manual-selected", files: selectedFiles, skipExisting: false });
@@ -1546,7 +1749,7 @@
       const skippedCount = candidateFiles.length - filesToProcess.length;
 
       if (!filesToProcess.length) {
-        setStatus("Alle KOF/SOSI-filer har allerede en konvertert fil i samme mappe", "success");
+        setStatus("Alle KOF/SOSI/GML-filer har allerede en konvertert fil i samme mappe", "success");
         showHint("Ingen filer ble konvertert pÃ¥ nytt. Slett eksisterende TXT/XML i Trimble Connect hvis du vil tvinge en ny konvertering.");
         setDebug({
           action: options.source === "auto-open" ? "autoConvertAllOnOpen" : "convertAll",
@@ -1637,7 +1840,7 @@
           setStatus(`Ferdig! ${okCount} fil${okCount === 1 ? "" : "er"} konvertert og lastet opp${skippedCount ? ` (${skippedCount} hoppet over)` : ""}`, "success");
           showHint(
             skippedCount
-              ? `Alle nye filer ble lastet opp. ${skippedCount} KOF/SOSI-fil${skippedCount === 1 ? "" : "er"} hadde allerede TXT/XML i samme mappe og ble ikke konvertert pÃ¥ nytt.`
+              ? `Alle nye filer ble lastet opp. ${skippedCount} KOF/SOSI/GML-fil${skippedCount === 1 ? "" : "er"} hadde allerede TXT/XML i samme mappe og ble ikke konvertert pÃ¥ nytt.`
               : "Alle konverterte filer ble automatisk lastet opp tilbake til samme prosjektmapper i Trimble Connect."
           );
         } else {

@@ -8,6 +8,10 @@
     PROXY_URL: "/.netlify/functions/tc-proxy",
     APP_TITLE: "KOFConverter",
     AUTO_CONVERT_ON_OPEN: true,
+    IFC_POINT_OBJECT_HEIGHT_M: 1,
+    IFC_FALLBACK_LINE_RADIUS_M: 0.05,
+    IFC_REFERENCE_LINE_RADIUS_M: 0.015,
+    IFC_REFERENCE_POINT_SIZE_M: 0.08,
     MENU_MAIN_COMMAND: "KOF2TXT_MAIN",
     MENU_OPEN_COMMAND: "KOF2TXT_OPEN"
   };
@@ -22,10 +26,6 @@
     isEmbedded: false,
     lastResult: null,
     busy: false,
-    conversionInProgress: false,
-    cancelConversionRequested: false,
-    manualSelectionMode: false,
-    manualSelectedFileIds: new Set(),
     explorerApi: null,
     explorerVisible: false,
     lastDownloadName: null,
@@ -56,20 +56,11 @@
 
   function setBusy(busy) {
     state.busy = busy;
-    if (ui.refreshBtn) {
-      ui.refreshBtn.textContent = state.manualSelectionMode ? "Oppdater liste" : "Oppdater og konverter";
-      ui.refreshBtn.disabled = busy;
-    }
-    if (ui.stopBtn) {
-      ui.stopBtn.style.display = state.conversionInProgress ? "" : "none";
-      ui.stopBtn.disabled = !state.conversionInProgress || state.cancelConversionRequested;
-    }
-    if (ui.convertManualBtn) {
-      ui.convertManualBtn.style.display = state.manualSelectionMode ? "" : "none";
-      ui.convertManualBtn.disabled = busy || state.manualSelectedFileIds.size === 0;
-    }
+    if (ui.refreshBtn) ui.refreshBtn.disabled = busy;
     if (ui.localUploadBtn) ui.localUploadBtn.disabled = busy;
     if (ui.projectUploadBtn) ui.projectUploadBtn.disabled = busy || !canOpenProjectUpload();
+    if (ui.convertSelectedBtn) ui.convertSelectedBtn.disabled = busy || !state.selectedFile;
+    if (ui.convertAllBtn) ui.convertAllBtn.disabled = busy || !state.fileList.length;
   }
 
   function shortText(text, len = 1500) {
@@ -90,7 +81,11 @@
   }
 
   function triggerDownload(filename, text) {
-    const mimeType = /\.xml$/i.test(String(filename || "")) ? "application/xml;charset=utf-8" : "text/plain;charset=utf-8";
+    const mimeType = /\.xml$/i.test(String(filename || ""))
+      ? "application/xml;charset=utf-8"
+      : /\.ifc$/i.test(String(filename || ""))
+        ? "application/x-step;charset=utf-8"
+        : "text/plain;charset=utf-8";
     const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -110,6 +105,11 @@
   function getXmlFilename(filename) {
     const name = String(filename || "output.kof").trim() || "output.kof";
     return /\.(kof|sos|sosi|gml)$/i.test(name) ? name.replace(/\.(kof|sos|sosi|gml)$/i, ".xml") : `${name}.xml`;
+  }
+
+  function getIfcFilename(filename) {
+    const name = String(filename || "output.gml").trim() || "output.gml";
+    return /\.gml$/i.test(name) ? name.replace(/\.gml$/i, ".ifc") : `${name}.ifc`;
   }
 
   function getUploadTargetFile() {
@@ -169,7 +169,7 @@
     titleCard.appendChild(el("div", "card-header", [
       el("h2", null, CONFIG.APP_TITLE)
     ]));
-    titleCard.appendChild(el("div", "subtitle", "Konverter .kof til TXT/XML og .sos/.sosi/.gml til LandXML"));
+    titleCard.appendChild(el("div", "subtitle", "Konverter .kof til TXT/XML, .sos/.sosi til LandXML og .gml til IFC"));
 
     const projectCard = el("div", "card");
     projectCard.appendChild(el("div", "label", "Prosjekt"));
@@ -187,21 +187,21 @@
     filesCard.appendChild(filesHeader);
 
     const btnRow = el("div", "btn-row");
-    const refreshBtn = el("button", "primary", "Oppdater og konverter");
-    const stopBtn = el("button", "danger", "Stopp konvertering");
-    const convertManualBtn = el("button", "primary", "Konverter valgte");
-    const localUploadBtn = el("button", null, "Konverter lokal fil");
-    const projectUploadBtn = el("button", null, "Trimble Connect datautforsker");
+    const refreshBtn = el("button", null, "Oppdater liste");
+    const convertSelectedBtn = el("button", "primary", "Konverter valgt");
+    const convertAllBtn = el("button", null, "Konverter alle");
+    const localUploadBtn = el("button", null, "Last opp lokal fil");
+    const projectUploadBtn = el("button", null, "Last opp til prosjekt");
     const localFileInput = document.createElement("input");
     localFileInput.type = "file";
     localFileInput.accept = ".kof,.sos,.sosi,.gml,text/plain,application/gml+xml,application/xml";
     localFileInput.style.display = "none";
-    stopBtn.style.display = "none";
-    convertManualBtn.style.display = "none";
+    convertSelectedBtn.disabled = true;
+    convertAllBtn.disabled = true;
     projectUploadBtn.disabled = true;
     btnRow.appendChild(refreshBtn);
-    btnRow.appendChild(stopBtn);
-    btnRow.appendChild(convertManualBtn);
+    btnRow.appendChild(convertSelectedBtn);
+    btnRow.appendChild(convertAllBtn);
     btnRow.appendChild(localUploadBtn);
     btnRow.appendChild(projectUploadBtn);
     btnRow.appendChild(localFileInput);
@@ -215,7 +215,7 @@
     explorerCard.style.display = "none";
     const explorerHeader = el("div", "card-header", [
       el("div", null, [
-        el("div", "label", "Trimble Connect datautforsker"),
+        el("div", "label", "Last opp til prosjekt"),
         el("div", "subtitle", "Trimble Connects egen opplastingsvisning, åpnet i riktig prosjektmappe")
       ])
     ]);
@@ -257,8 +257,8 @@
       projectValue,
       fileCount,
       refreshBtn,
-      stopBtn,
-      convertManualBtn,
+      convertSelectedBtn,
+      convertAllBtn,
       localUploadBtn,
       projectUploadBtn,
       localFileInput,
@@ -301,22 +301,15 @@
 
     for (const file of state.fileList) {
       const isSelected = state.selectedFile?.id === file.id;
-      const isManualSelected = state.manualSelectedFileIds.has(file.id);
-      const conversionState = getFileConversionState(file);
-      const row = el("label", `file-item ${conversionState.className}${isSelected || isManualSelected ? " selected" : ""}`);
+      const row = el("label", `file-item${isSelected ? " selected" : ""}`);
 
-      const selector = document.createElement("input");
-      selector.type = state.manualSelectionMode ? "checkbox" : "radio";
-      selector.name = state.manualSelectionMode ? "manualKofFile" : "kofFile";
-      selector.value = file.id;
-      selector.checked = state.manualSelectionMode ? isManualSelected : isSelected;
-      selector.addEventListener("change", () => {
-        if (state.manualSelectionMode) {
-          if (selector.checked) state.manualSelectedFileIds.add(file.id);
-          else state.manualSelectedFileIds.delete(file.id);
-        } else {
-          state.selectedFile = file;
-        }
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "kofFile";
+      radio.value = file.id;
+      radio.checked = isSelected;
+      radio.addEventListener("change", () => {
+        state.selectedFile = file;
         renderFileList();
         setBusy(state.busy);
       });
@@ -325,11 +318,8 @@
       info.appendChild(el("div", "file-name", file.name || "(uten navn)"));
       if (file.path) info.appendChild(el("div", "file-meta", file.path));
 
-      const statusBadge = el("span", `file-status ${conversionState.className}`, conversionState.label);
-
-      row.appendChild(selector);
+      row.appendChild(radio);
       row.appendChild(info);
-      row.appendChild(statusBadge);
       ui.fileList.appendChild(row);
     }
   }
@@ -509,13 +499,13 @@
 
       if (ui.explorerTarget) {
         const suggestedText = summary.suggestedName
-          ? `Last opp <strong>${escapeHtml(summary.suggestedName)}</strong> via <strong>Legg til</strong> eller dra filen inn her.`
-          : `Bruk <strong>Legg til</strong> eller dra filen inn her for å laste opp den konverterte TXT-filen.`;
+          ? `Last opp <strong>${escapeHtml(summary.suggestedName)}</strong> via <strong>Legg til</strong>.`
+          : `Bruk <strong>Legg til</strong> for å laste opp den konverterte filen.`;
         ui.explorerTarget.innerHTML = `${escapeHtml(summary.locationText)} <span class="badge">${escapeHtml(summary.projectName)}</span><br>${suggestedText}`;
       }
 
       showExplorerPanel(true);
-      setStatus("Trimble Connect-mappen for opplasting er åpnet", "success");
+      setStatus("Prosjektmappen for opplasting er åpnet", "success");
       setDebug({
         action: "openProjectUploadExplorer",
         projectId: state.project.id,
@@ -726,7 +716,7 @@
     return "kof";
   }
 
-  function convertKofFile(kofText, fileName) {
+  function convertKofFile(kofText, fileName, options = {}) {
     const sourceText = String(kofText || "");
     const sourceType = detectSourceFileType(sourceText, fileName);
 
@@ -739,11 +729,28 @@
     }
 
     if (sourceType === "gml") {
-      return {
-        format: "xml",
-        outName: getXmlFilename(fileName),
-        text: gmlToLandXml(sourceText, { fileName })
-      };
+      try {
+        const ifc = gmlToIfc(sourceText, {
+          fileName,
+          projectName: state.project?.name || state.project?.id || "Prosjekt",
+          coordSys: "EPSG:5972"
+        });
+        return {
+          format: "ifc",
+          outName: getIfcFilename(fileName),
+          text: ifc.text,
+          stats: ifc.stats
+        };
+      } catch (err) {
+        console.warn("GML til IFC feilet, bruker LandXML fallback:", err);
+        return {
+          format: "xml",
+          outName: getXmlFilename(fileName),
+          text: gmlToLandXml(sourceText, { fileName }),
+          fallbackFrom: "ifc",
+          fallbackError: err?.message || String(err)
+        };
+      }
     }
 
     if (shouldConvertToLandXml(sourceText)) {
@@ -832,9 +839,540 @@
     });
   }
 
+  function gmlToIfc(gmlText, options = {}) {
+    const objects = parseGmlForIfc(gmlText);
+    const outName = getIfcFilename(options.fileName || "output.gml");
+    const result = buildIfc(objects, {
+      version: options.version || "IFC4",
+      projectName: options.projectName || "Prosjekt",
+      coordSys: options.coordSys || "EPSG:5972",
+      solidMode: options.solidMode !== false,
+      extrusionHeight: Number.isFinite(options.extrusionHeight) ? options.extrusionHeight : 3,
+      outputFile: outName
+    });
+    return result;
+  }
+
+  const IFC_PIPE_TYPES = new Set([
+    "DR", "SP", "OV", "AF", "VL", "TL", "LL",
+    "LETREUKAB", "LETREUVANN", "LETREUDREN",
+    "KAB", "EL", "TEL",
+    "LEKU", "OVS", "SPP", "SPS", "LESPUNT", "LESTIKKB",
+    "LETRA", "LETRE", "LETREMKAB", "VLU", "VLP", "VLSPR", "LEVAR"
+  ]);
+
+  const IFC_POINT_PRODUCT_TYPES = {
+    ANB: "IFCPIPEFITTING",
+    BFD: "IFCTANK",
+    DIV: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    FORAKONSTR: "IFCBUILDINGELEMENTPROXY",
+    GRN: "IFCPIPEFITTING",
+    GUT: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    HYD: "IFCFIRESUPPRESSIONTERMINAL",
+    INB: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    INR: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    INT: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    KONSTROMRIS: "IFCBUILDINGELEMENTPROXY",
+    KOTREKUM: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    KRN: "IFCVALVE",
+    KUM: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    LOK: "IFCCOVERING",
+    OVL: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    PMK: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    RED: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SAN: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SANI: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SEP: "IFCTANK",
+    SLG: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SLI: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SLS: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SLU: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    SPR: "IFCFIRESUPPRESSIONTERMINAL",
+    TNK: "IFCTANK",
+    TOKSTVL: "IFCPUMP",
+    TOP: "IFCANNOTATION",
+    UTS: "IFCDISTRIBUTIONCHAMBERELEMENT",
+    VPK: "IFCVALVE"
+  };
+
+  function buildIfc(objects, options = {}) {
+    const schema = options.version === "IFC2X3" || options.version === "IFC4X3" ? options.version : "IFC4";
+    const timestamp = new Date().toISOString().slice(0, 19);
+    const lines = [];
+    let counter = 1;
+    const elementRefs = [];
+
+    const addRaw = (line) => lines.push(line);
+    const addEntity = (body) => {
+      const id = counter;
+      counter += 1;
+      lines.push(`#${id}=${body}`);
+      return id;
+    };
+
+    addRaw("ISO-10303-21;");
+    addRaw("HEADER;");
+    addRaw("FILE_DESCRIPTION(('ViewDefinition [CoordinationView]'),'2;1');");
+    addRaw(`FILE_NAME('${ifcString(fileBaseName(options.outputFile || "output.ifc"))}','${timestamp}',('GML til IFC Konverter'),(''),'','','');`);
+    addRaw(`FILE_SCHEMA(('${schema}'));`);
+    addRaw("ENDSEC;");
+    addRaw("DATA;");
+
+    const org = addEntity("IFCORGANIZATION($,'GML-IFC Converter',$,$,$);");
+    const app = addEntity(`IFCAPPLICATION(#${org},'1.0','GML to IFC Converter','GML2IFC');`);
+    const person = addEntity("IFCPERSON($,'Bruker',$,$,$,$,$,$);");
+    const pao = addEntity(`IFCPERSONANDORGANIZATION(#${person},#${org},$);`);
+    const owner = addEntity(`IFCOWNERHISTORY(#${pao},#${app},$,.ADDED.,$,$,$,0);`);
+    const lengthUnit = addEntity("IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);");
+    const areaUnit = addEntity("IFCSIUNIT(*,.AREAUNIT.,$,.SQUARE_METRE.);");
+    const volumeUnit = addEntity("IFCSIUNIT(*,.VOLUMEUNIT.,$,.CUBIC_METRE.);");
+    const angleUnit = addEntity("IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.);");
+    const units = addEntity(`IFCUNITASSIGNMENT((#${lengthUnit},#${areaUnit},#${volumeUnit},#${angleUnit}));`);
+    const origin = addEntity("IFCCARTESIANPOINT((0.,0.,0.));");
+    const zAxis = addEntity("IFCDIRECTION((0.,0.,1.));");
+    const xAxis = addEntity("IFCDIRECTION((1.,0.,0.));");
+    const axis3d = addEntity(`IFCAXIS2PLACEMENT3D(#${origin},#${zAxis},#${xAxis});`);
+    const extrusionDir = addEntity("IFCDIRECTION((0.,0.,1.));");
+    const context = addEntity(`IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#${axis3d},$);`);
+    const project = addEntity(`IFCPROJECT('${ifcGuid()}',#${owner},'${ifcString(options.projectName || "Prosjekt")}',$,$,$,$,(#${context}),#${units});`);
+    const site = addEntity(`IFCSITE('${ifcGuid()}',#${owner},'GML Site','CRS: ${ifcString(options.coordSys || "EPSG:5972")}',$,#${axis3d},$,.ELEMENT.,$,$,$,$,$);`);
+    const building = addEntity(`IFCBUILDING('${ifcGuid()}',#${owner},'GML Building',$,$,#${axis3d},$,$,.ELEMENT.,$,$,$);`);
+    const storey = addEntity(`IFCBUILDINGSTOREY('${ifcGuid()}',#${owner},'Storey 0',$,$,#${axis3d},$,$,.ELEMENT.,0.);`);
+    addEntity(`IFCRELAGGREGATES('${ifcGuid()}',#${owner},$,$,#${project},(#${site}));`);
+    addEntity(`IFCRELAGGREGATES('${ifcGuid()}',#${owner},$,$,#${site},(#${building}));`);
+    addEntity(`IFCRELAGGREGATES('${ifcGuid()}',#${owner},$,$,#${building},(#${storey}));`);
+
+    const stats = { points: 0, pointObjects: 0, curves: 0, solids: 0, pipes: 0, referenceGeometry: 0, geom: 0, entities: 0 };
+
+    for (const [index, object] of (Array.isArray(objects) ? objects : []).entries()) {
+      const guid = ifcGuid();
+      const name = ifcString(object.props?.name || object.props?.Name || object.id || `Objekt_${index + 1}`).slice(0, 255);
+      const desc = ifcString(object.props?.description || object.props?.class || object.type || "").slice(0, 255);
+      const coords = (object.coords || []).slice(0, 200);
+      const placement = addEntity(`IFCLOCALPLACEMENT($,#${axis3d});`);
+      let shapeRef = "$";
+      let element;
+      let addReferenceAnnotation = false;
+
+      if (object.geom === "point" && coords.length) {
+        const pointDims = getIfcPointObjectDims(object.props || {});
+        const productType = getIfcPointProductType(object);
+        if (pointDims && productType !== "IFCANNOTATION") {
+          element = buildIfcPointObject(addEntity, context, placement, owner, guid, name, desc, coords[0], pointDims, productType, zAxis, xAxis, extrusionDir);
+          stats.pointObjects += 1;
+          stats.solids += 1;
+          addReferenceAnnotation = true;
+        } else {
+          element = buildIfcPointAnnotation(addEntity, context, owner, guid, name, desc, placement, coords[0]);
+          stats.points += 1;
+        }
+        stats.geom += 1;
+      } else if (object.geom === "curve" && isIfcPipeCandidate(object)) {
+        const dims = getIfcPipeDims(object.props || {});
+        if (dims) {
+          const offset = getIfcZOffsetToCenter(object.props || {}, dims);
+          const adjusted = coords.map((coord) => [coord[0], coord[1], coord[2] + offset]);
+          if (dims.shape === "circle") {
+            const pointRefs = adjusted.map((coord) => `#${addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])},${formatIfcNumber(coord[2])}));`)}`);
+            const polyline = addEntity(`IFCPOLYLINE((${pointRefs.join(",")}));`);
+            const solid = addEntity(`IFCSWEPTDISKSOLID(#${polyline},${formatIfcNumber(dims.odM / 2)},${formatIfcNumber(dims.idM / 2)},$,$);`);
+            const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Body','SweptSolid',(#${solid}));`);
+            const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+            shapeRef = `#${shape}`;
+            element = addEntity(`IFCPIPESEGMENT('${guid}',#${owner},'${name}','${desc}',$,#${placement},${shapeRef},$,.NOTDEFINED.);`);
+          } else {
+            const solidRefs = buildIfcRectangularPipeSolids(addEntity, adjusted, dims);
+            if (solidRefs.length) {
+              const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Body','SweptSolid',(${solidRefs.join(",")}));`);
+              const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+              shapeRef = `#${shape}`;
+            }
+            element = addEntity(`IFCCABLESEGMENT('${guid}',#${owner},'${name}','${desc}',$,#${placement},${shapeRef},$,.NOTDEFINED.);`);
+          }
+          stats.pipes += 1;
+          stats.solids += 1;
+          stats.geom += 1;
+          addReferenceAnnotation = true;
+        } else {
+          element = buildIfcCurveAnnotation(addEntity, context, owner, guid, name, desc, placement, coords);
+          stats.curves += 1;
+          stats.geom += 1;
+        }
+      } else if (object.geom === "curve" && coords.length >= 2) {
+        element = buildIfcCurveFallbackSolid(addEntity, context, placement, owner, guid, name, desc, coords, CONFIG.IFC_FALLBACK_LINE_RADIUS_M);
+        stats.solids += 1;
+        stats.geom += 1;
+        addReferenceAnnotation = true;
+      } else if (object.geom === "polygon" && coords.length >= 4) {
+        if (options.solidMode !== false) {
+          element = buildIfcPolygonSolid(addEntity, context, placement, owner, guid, name, desc, coords, options.extrusionHeight || 3, zAxis, xAxis, extrusionDir);
+          stats.solids += 1;
+          stats.geom += 1;
+          addReferenceAnnotation = true;
+        } else {
+          element = buildIfcCurveAnnotation(addEntity, context, owner, guid, name, desc, placement, coords);
+          stats.curves += 1;
+          stats.geom += 1;
+        }
+      } else {
+        element = addEntity(`IFCBUILDINGELEMENTPROXY('${guid}',#${owner},'${name}','${desc}',$,#${placement},$,$,.ELEMENT.);`);
+      }
+
+      elementRefs.push(`#${element}`);
+      addIfcProperties(addEntity, owner, element, object.props || {});
+      if (addReferenceAnnotation) {
+        const refPlacement = addEntity(`IFCLOCALPLACEMENT($,#${axis3d});`);
+        const refName = ifcString(`${object.props?.name || object.props?.Name || object.id || `Objekt_${index + 1}`} referanse`).slice(0, 255);
+        const refElement = buildIfcReferenceGeometry(addEntity, context, refPlacement, owner, ifcGuid(), refName, "Original GML-geometri", object.geom, coords, zAxis, xAxis, extrusionDir);
+        elementRefs.push(`#${refElement}`);
+        stats.referenceGeometry += 1;
+      }
+    }
+
+    if (elementRefs.length) {
+      addEntity(`IFCRELCONTAINEDINSPATIALSTRUCTURE('${ifcGuid()}',#${owner},'Innhold',$,(${elementRefs.join(",")}),#${storey});`);
+    }
+
+    addRaw("ENDSEC;");
+    addRaw("END-ISO-10303-21;");
+    stats.entities = counter - 1;
+    return { text: lines.join("\n"), stats };
+  }
+
+  function buildIfcPointAnnotation(addEntity, context, owner, guid, name, desc, placement, coord) {
+    const point = addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])},${formatIfcNumber(coord[2])}));`);
+    const gset = addEntity(`IFCGEOMETRICSET((#${point}));`);
+    const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Annotation','GeometricSet',(#${gset}));`);
+    const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+    return addEntity(`IFCANNOTATION('${guid}',#${owner},'${name}','${desc}','SurveyPoint',#${placement},#${shape});`);
+  }
+
+  function buildIfcReferenceGeometry(addEntity, context, placement, owner, guid, name, desc, geom, coords, zAxis, xAxis, extrusionDir) {
+    if (geom === "point" && coords.length) {
+      return buildIfcReferencePointSolid(addEntity, context, placement, owner, guid, name, desc, coords[0], zAxis, xAxis, extrusionDir);
+    }
+    if ((geom === "curve" || geom === "polygon") && coords.length >= 2) {
+      return buildIfcCurveFallbackSolid(addEntity, context, placement, owner, guid, name, desc, coords, CONFIG.IFC_REFERENCE_LINE_RADIUS_M);
+    }
+    return addEntity(`IFCBUILDINGELEMENTPROXY('${guid}',#${owner},'${name}','${desc}',$,#${placement},$,$,.ELEMENT.);`);
+  }
+
+  function buildIfcReferencePointSolid(addEntity, context, placement, owner, guid, name, desc, coord, zAxis, xAxis, extrusionDir) {
+    const half = CONFIG.IFC_REFERENCE_POINT_SIZE_M / 2;
+    const profile = addEntity(`IFCRECTANGLEPROFILEDEF(.AREA.,$,$,${formatIfcNumber(CONFIG.IFC_REFERENCE_POINT_SIZE_M)},${formatIfcNumber(CONFIG.IFC_REFERENCE_POINT_SIZE_M)});`);
+    const basePoint = addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])},${formatIfcNumber(coord[2] - half)}));`);
+    const solidAxis = addEntity(`IFCAXIS2PLACEMENT3D(#${basePoint},#${zAxis},#${xAxis});`);
+    const solid = addEntity(`IFCEXTRUDEDAREASOLID(#${profile},#${solidAxis},#${extrusionDir},${formatIfcNumber(CONFIG.IFC_REFERENCE_POINT_SIZE_M)});`);
+    const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Body','SweptSolid',(#${solid}));`);
+    const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+    return addEntity(`IFCBUILDINGELEMENTPROXY('${guid}',#${owner},'${name}','${desc}',$,#${placement},#${shape},$,.ELEMENT.);`);
+  }
+
+  function buildIfcPointObject(addEntity, context, placement, owner, guid, name, desc, coord, dims, productType, zAxis, xAxis, extrusionDir) {
+    const profile = buildIfcPointObjectProfile(addEntity, dims);
+    const baseZ = getIfcPointObjectBaseZ(dims.props || {}, coord[2], dims.heightM);
+    const basePoint = addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])},${formatIfcNumber(baseZ)}));`);
+    const solidAxis = addEntity(`IFCAXIS2PLACEMENT3D(#${basePoint},#${zAxis},#${xAxis});`);
+    const solid = addEntity(`IFCEXTRUDEDAREASOLID(#${profile},#${solidAxis},#${extrusionDir},${formatIfcNumber(dims.heightM)});`);
+    const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Body','SweptSolid',(#${solid}));`);
+    const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+    return addIfcProductElement(addEntity, productType, guid, owner, name, desc, placement, `#${shape}`);
+  }
+
+  function buildIfcPointObjectProfile(addEntity, dims) {
+    if (dims.shape === "circle") {
+      if (dims.thkM > 0) {
+        return addEntity(`IFCCIRCLEHOLLOWPROFILEDEF(.AREA.,$,$,${formatIfcNumber(dims.outerDiameterM / 2)},${formatIfcNumber(dims.thkM)});`);
+      }
+      return addEntity(`IFCCIRCLEPROFILEDEF(.AREA.,$,$,${formatIfcNumber(dims.outerDiameterM / 2)});`);
+    }
+    if (dims.thkM > 0) {
+      return addEntity(`IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,$,${formatIfcNumber(dims.outerWidthM)},${formatIfcNumber(dims.outerLengthM)},${formatIfcNumber(dims.thkM)},$,$);`);
+    }
+    return addEntity(`IFCRECTANGLEPROFILEDEF(.AREA.,$,$,${formatIfcNumber(dims.outerWidthM)},${formatIfcNumber(dims.outerLengthM)});`);
+  }
+
+  function addIfcProductElement(addEntity, productType, guid, owner, name, desc, placement, shapeRef) {
+    if (productType === "IFCBUILDINGELEMENTPROXY") {
+      return addEntity(`IFCBUILDINGELEMENTPROXY('${guid}',#${owner},'${name}','${desc}',$,#${placement},${shapeRef},$,.ELEMENT.);`);
+    }
+    if (productType === "IFCANNOTATION") {
+      return addEntity(`IFCANNOTATION('${guid}',#${owner},'${name}','${desc}','SurveyPoint',#${placement},${shapeRef});`);
+    }
+    return addEntity(`${productType}('${guid}',#${owner},'${name}','${desc}',$,#${placement},${shapeRef},$,.NOTDEFINED.);`);
+  }
+
+  function buildIfcCurveAnnotation(addEntity, context, owner, guid, name, desc, placement, coords) {
+    const pointRefs = coords.map((coord) => `#${addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])},${formatIfcNumber(coord[2])}));`)}`);
+    const polyline = addEntity(`IFCPOLYLINE((${pointRefs.join(",")}));`);
+    const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Annotation','Curve3D',(#${polyline}));`);
+    const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+    return addEntity(`IFCANNOTATION('${guid}',#${owner},'${name}','${desc}','Annotation curve',#${placement},#${shape});`);
+  }
+
+  function buildIfcCurveFallbackSolid(addEntity, context, placement, owner, guid, name, desc, coords, radiusM) {
+    const pointRefs = coords.map((coord) => `#${addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])},${formatIfcNumber(coord[2])}));`)}`);
+    const polyline = addEntity(`IFCPOLYLINE((${pointRefs.join(",")}));`);
+    const solid = addEntity(`IFCSWEPTDISKSOLID(#${polyline},${formatIfcNumber(radiusM)},$,$,$);`);
+    const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Body','SweptSolid',(#${solid}));`);
+    const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+    return addEntity(`IFCBUILDINGELEMENTPROXY('${guid}',#${owner},'${name}','${desc}',$,#${placement},#${shape},$,.ELEMENT.);`);
+  }
+
+  function buildIfcPolygonSolid(addEntity, context, placement, owner, guid, name, desc, coords, extrusionHeight, zAxis, xAxis, extrusionDir) {
+    const ring = coords.slice(0, -1);
+    const pointRefs = ring.map((coord) => `#${addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(coord[0])},${formatIfcNumber(coord[1])}));`)}`);
+    pointRefs.push(pointRefs[0]);
+    const polyline = addEntity(`IFCPOLYLINE((${pointRefs.join(",")}));`);
+    const profile = addEntity(`IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#${polyline});`);
+    const baseZ = Math.min(...ring.map((coord) => Number(coord[2]) || 0));
+    const basePoint = addEntity(`IFCCARTESIANPOINT((0.,0.,${formatIfcNumber(baseZ)}));`);
+    const solidAxis = addEntity(`IFCAXIS2PLACEMENT3D(#${basePoint},#${zAxis},#${xAxis});`);
+    const solid = addEntity(`IFCEXTRUDEDAREASOLID(#${profile},#${solidAxis},#${extrusionDir},${formatIfcNumber(extrusionHeight)});`);
+    const rep = addEntity(`IFCSHAPEREPRESENTATION(#${context},'Body','SweptSolid',(#${solid}));`);
+    const shape = addEntity(`IFCPRODUCTDEFINITIONSHAPE($,$,(#${rep}));`);
+    return addEntity(`IFCBUILDINGELEMENTPROXY('${guid}',#${owner},'${name}','${desc}',$,#${placement},#${shape},$,.ELEMENT.);`);
+  }
+
+  function buildIfcRectangularPipeSolids(addEntity, coords, dims) {
+    const profile = addEntity(`IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,$,${formatIfcNumber(dims.heightM)},${formatIfcNumber(dims.widthM)},${formatIfcNumber(dims.thkM)},$,$);`);
+    const solidRefs = [];
+    for (let index = 0; index < coords.length - 1; index += 1) {
+      const p0 = coords[index];
+      const p1 = coords[index + 1];
+      const dx = p1[0] - p0[0];
+      const dy = p1[1] - p0[1];
+      const dz = p1[2] - p0[2];
+      const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (length < 1e-9) continue;
+      const zx = dx / length;
+      const zy = dy / length;
+      const zz = dz / length;
+      const baseAxis = Math.abs(zz) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const dot = baseAxis[0] * zx + baseAxis[1] * zy + baseAxis[2] * zz;
+      let ex = baseAxis[0] - dot * zx;
+      let ey = baseAxis[1] - dot * zy;
+      let ez = baseAxis[2] - dot * zz;
+      const en = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1;
+      ex /= en; ey /= en; ez /= en;
+      const segOrigin = addEntity(`IFCCARTESIANPOINT((${formatIfcNumber(p0[0])},${formatIfcNumber(p0[1])},${formatIfcNumber(p0[2])}));`);
+      const segZ = addEntity(`IFCDIRECTION((${formatIfcNumber(zx, 8)},${formatIfcNumber(zy, 8)},${formatIfcNumber(zz, 8)}));`);
+      const segX = addEntity(`IFCDIRECTION((${formatIfcNumber(ex, 8)},${formatIfcNumber(ey, 8)},${formatIfcNumber(ez, 8)}));`);
+      const segAxis = addEntity(`IFCAXIS2PLACEMENT3D(#${segOrigin},#${segZ},#${segX});`);
+      const extDir = addEntity("IFCDIRECTION((0.,0.,1.));");
+      const solid = addEntity(`IFCEXTRUDEDAREASOLID(#${profile},#${segAxis},#${extDir},${formatIfcNumber(length)});`);
+      solidRefs.push(`#${solid}`);
+    }
+    return solidRefs;
+  }
+
+  function addIfcProperties(addEntity, owner, element, props) {
+    const entries = Object.entries(props || {}).filter(([key]) => key !== "gml:id");
+    if (!entries.length) return;
+    const propertyRefs = [];
+    for (const [key, value] of entries) {
+      const property = addEntity(`IFCPROPERTYSINGLEVALUE('${ifcString(key).slice(0, 255)}',$,IFCLABEL('${ifcString(value).slice(0, 255)}'),$);`);
+      propertyRefs.push(`#${property}`);
+    }
+    const pset = addEntity(`IFCPROPERTYSET('${ifcGuid()}',#${owner},'GML_Properties',$,(${propertyRefs.join(",")}));`);
+    addEntity(`IFCRELDEFINESBYPROPERTIES('${ifcGuid()}',#${owner},$,$,(#${element}),#${pset});`);
+  }
+
+  function getIfcPointProductType(object) {
+    const code = normalizeIfcCode(object?.type || getIfcProp(object?.props || {}, ["OBJTYPE", "Type", "Navn"]));
+    return IFC_POINT_PRODUCT_TYPES[code] || (getIfcPointObjectDims(object?.props || {}) ? "IFCBUILDINGELEMENTPROXY" : "IFCANNOTATION");
+  }
+
+  function getIfcPointObjectDims(props) {
+    const kumform = normalizeIfcToken(getIfcProp(props, ["Kumform"]));
+    const widthM = pointDimensionToMeters(getIfcProp(props, ["Bredde"]));
+    const lengthM = pointDimensionToMeters(getIfcProp(props, ["Lengde"]));
+    if (!kumform || (widthM == null && lengthM == null)) return null;
+
+    const thkM = pointThicknessToMeters(getIfcProp(props, ["Tykkelse"]));
+    const insideOutside = normalizeIfcToken(getIfcProp(props, ["InnvendigUtvendig"]));
+    const usesInside = insideOutside.startsWith("ID") || insideOutside.includes("INNVENDIG");
+    const shape = kumform.startsWith("R") ? "circle" : "rect";
+    const baseWidthM = Math.max(0, widthM ?? lengthM ?? 0);
+    const baseLengthM = Math.max(0, lengthM ?? baseWidthM);
+    if (baseWidthM <= 0 || baseLengthM <= 0) return null;
+
+    const outerWidthM = usesInside ? baseWidthM + 2 * thkM : baseWidthM;
+    const outerLengthM = usesInside ? baseLengthM + 2 * thkM : baseLengthM;
+    return {
+      shape,
+      outerDiameterM: outerWidthM,
+      outerWidthM,
+      outerLengthM: (kumform === "FK" || kumform === "F") ? outerWidthM : outerLengthM,
+      thkM,
+      heightM: getIfcPointObjectHeight(props),
+      props
+    };
+  }
+
+  function getIfcPointObjectHeight(props) {
+    const heightM = pointDimensionToMeters(getIfcProp(props, ["Høyde", "Hoyde", "VertikalDimensjon", "Vertikal dimensjon"]));
+    if (heightM != null && heightM > 0) return heightM;
+    return CONFIG.IFC_POINT_OBJECT_HEIGHT_M;
+  }
+
+  function pointDimensionToMeters(value) {
+    const number = firstNumber(value);
+    if (number == null || number <= 0) return null;
+    return number > 50 ? number / 1000 : number;
+  }
+
+  function pointThicknessToMeters(value) {
+    const number = firstNumber(value);
+    if (number == null || number <= 0) return 0;
+    return number > 5 ? number / 1000 : number;
+  }
+
+  function getIfcPointObjectBaseZ(props, measuredZ, heightM) {
+    const reference = normalizeIfcToken(getIfcProp(props, ["Høydereferanse", "Hoydereferanse"]));
+    const slabM = firstNumber(getIfcProp(props, ["Avst_BunnInnvUnderUtv"])) || 0;
+    if (reference.includes("TOPP") || reference.includes("OVERKANT")) return measuredZ - heightM;
+    if (reference.includes("SENTER")) return measuredZ - heightM / 2;
+    if (reference.includes("BUNN_INNVENDIG")) return measuredZ - slabM;
+    return measuredZ;
+  }
+
+  function getIfcPipeDims(props) {
+    const dimMm = firstNumber(getIfcProp(props, ["Dimensjon"]));
+    if (dimMm == null || dimMm <= 0) return null;
+    const thkMm = firstNumber(getIfcProp(props, ["Tykkelse"])) || 0;
+    const verticalDimMm = firstNumber(getIfcProp(props, ["VertikalDimensjon", "Vertikal dimensjon"]));
+    const insideOutside = String(getIfcProp(props, ["InnvendigUtvendig"]) || "").toUpperCase();
+    const usesInsideDiameter = insideOutside.startsWith("ID") || insideOutside.includes("INNVENDIG");
+    const pipeShape = String(getIfcProp(props, ["Rørform", "Rorform"]) || "").toUpperCase();
+    const shapeToken = pipeShape.split(/\s+/)[0];
+    const shape = shapeToken === "F" || pipeShape.includes("FIRKANT")
+      ? "rect"
+      : shapeToken === "S" || pipeShape.includes("SIRK")
+        ? "circle"
+        : "rect";
+    const innerWidthMm = usesInsideDiameter ? dimMm : Math.max(0, dimMm - 2 * thkMm);
+    const outerWidthMm = usesInsideDiameter ? dimMm + 2 * thkMm : dimMm;
+    const inputHeightMm = verticalDimMm != null && verticalDimMm > 0 ? verticalDimMm : dimMm;
+    const innerHeightMm = usesInsideDiameter ? inputHeightMm : Math.max(0, inputHeightMm - 2 * thkMm);
+    const outerHeightMm = usesInsideDiameter ? inputHeightMm + 2 * thkMm : inputHeightMm;
+    if (!shape) return null;
+    return {
+      odM: outerWidthMm / 1000,
+      idM: innerWidthMm / 1000,
+      widthM: outerWidthMm / 1000,
+      heightM: outerHeightMm / 1000,
+      innerWidthM: innerWidthMm / 1000,
+      innerHeightM: innerHeightMm / 1000,
+      thkM: thkMm / 1000,
+      shape
+    };
+  }
+
+  function getIfcZOffsetToCenter(props, dims) {
+    const reference = String(getIfcProp(props, ["Høydereferanse", "Hoydereferanse"]) || "").toUpperCase();
+    const outerVerticalM = dims.shape === "rect" ? dims.heightM : dims.odM;
+    const innerVerticalM = dims.shape === "rect" ? dims.innerHeightM : dims.idM;
+    if (reference.includes("BUNN_INNVENDIG") || reference.includes("UNDERKANT_INNVENDIG")) return innerVerticalM / 2;
+    if (reference.includes("BUNN_UTVENDIG") || reference.includes("UNDERKANT_UTVENDIG")) return outerVerticalM / 2;
+    if (reference.includes("TOPP_INNVENDIG") || reference.includes("OVERKANT_INNVENDIG")) return -innerVerticalM / 2;
+    if (reference.includes("TOPP_UTVENDIG") || reference.includes("OVERKANT_UTVENDIG")) return -outerVerticalM / 2;
+    if (reference.includes("PÅ_BAKKEN") || reference.includes("PA_BAKKEN")) return outerVerticalM / 2;
+    return 0;
+  }
+
+  function isIfcPipeCandidate(object) {
+    const code = normalizeIfcCode(object?.type || "");
+    if (IFC_PIPE_TYPES.has(code)) return true;
+    const props = object?.props || {};
+    return getIfcProp(props, ["Dimensjon"]) != null &&
+      getIfcProp(props, ["Rørform", "Rorform"]) != null;
+  }
+
+  function getIfcProp(props, aliases) {
+    const normalizedAliases = new Set((Array.isArray(aliases) ? aliases : [aliases]).map(normalizeIfcPropKey));
+    for (const [key, value] of Object.entries(props || {})) {
+      if (normalizedAliases.has(normalizeIfcPropKey(key))) return value;
+    }
+    return undefined;
+  }
+
+  function normalizeIfcCode(value) {
+    return normalizeIfcToken(value).replace(/\s+.*/, "");
+  }
+
+  function normalizeIfcToken(value) {
+    return repairUtf8Mojibake(String(value || ""))
+      .toUpperCase()
+      .replace(/Ã†/g, "AE")
+      .replace(/Ã˜/g, "O")
+      .replace(/Ã…/g, "A")
+      .replace(/Æ/g, "AE")
+      .replace(/Ø/g, "O")
+      .replace(/Å/g, "A")
+      .replace(/[?\ufffd]/g, "O")
+      .replace(/[^A-Z0-9_]+/g, " ")
+      .trim();
+  }
+
+  function normalizeIfcPropKey(key) {
+    return repairUtf8Mojibake(String(key || ""))
+      .toLowerCase()
+      .replace(/Ãƒâ€ /g, "ae")
+      .replace(/ÃƒËœ/g, "o")
+      .replace(/Ãƒâ€¦/g, "a")
+      .replace(/Ã†/g, "ae")
+      .replace(/Ã˜/g, "o")
+      .replace(/Ã…/g, "a")
+      .replace(/[Ã¦Ã¸Ã¥]/g, (char) => ({ "Ã¦": "ae", "Ã¸": "o", "Ã¥": "a" }[char]))
+      .replace(/[æøå]/g, (char) => ({ "æ": "ae", "ø": "o", "å": "a" }[char]))
+      .replace(/[?\ufffd]/g, "o")
+      .replace(/[^a-z0-9]/g, "");
+  }
+
+  function firstNumber(value) {
+    const match = String(value || "").match(/-?\d+(?:[.,]\d+)?/);
+    return match ? Number(match[0].replace(",", ".")) : null;
+  }
+
+  function ifcGuid() {
+    const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+    let hex = "";
+    if (globalThis.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    } else {
+      hex = `${Date.now().toString(16)}${Math.random().toString(16).slice(2).padEnd(20, "0")}`.slice(0, 32);
+    }
+    let value = BigInt(`0x${hex}`);
+    let result = "";
+    for (let index = 0; index < 22; index += 1) {
+      result += chars[Number(value % 64n)];
+      value /= 64n;
+    }
+    return result;
+  }
+
+  function formatIfcNumber(value, decimals = 6) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "0.";
+    const fixed = number.toFixed(decimals).replace(/0+$/g, "").replace(/\.$/, ".");
+    return fixed === "-0." ? "0." : fixed;
+  }
+
+  function ifcString(value) {
+    return String(value ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  }
+
+  function fileBaseName(path) {
+    return String(path || "output.ifc").split(/[\\/]/).pop() || "output.ifc";
+  }
+
   function buildLandXmlDocument(parsed, options = {}) {
     const fileName = String(options.fileName || "")
       .replace(/\.(kof|sos|sosi|gml)$/i, "") || options.fallbackName || "KOF";
+    const layerPrefix = options.layerPrefix || "Kof";
     const author = options.author || "kof2xml";
     const lineLayers = buildLandXmlLayerNames(parsed.lines, fileName, options);
     const now = new Date();
@@ -1107,6 +1645,90 @@
       points: dedupeLandXmlPointNames(points),
       lines: lineFeatures
     };
+  }
+
+  function parseGmlForIfc(gmlText) {
+    const xml = repairUtf8Mojibake(String(gmlText || ""));
+    const members = extractGmlFeatureMembers(xml);
+    const featureBlocks = members.length ? members : [{ type: "GML", attrsText: "", body: xml }];
+    const objects = [];
+
+    for (const feature of featureBlocks) {
+      const props = gmlAttributesToProps(getGmlFeatureAttributes(feature));
+      const featureType = feature.type || "GML";
+      const featureId = props["gml:id"] || props.id || props.S_OBJID || `obj_${objects.length + 1}`;
+      let produced = false;
+
+      const lineBlocks = [
+        ...extractXmlBlocks(feature.body, "LineString"),
+        ...extractXmlBlocks(feature.body, "LinearRing")
+      ];
+      for (const block of lineBlocks) {
+        const coordinateSets = extractGmlCoordinateSets(block);
+        for (const coords of coordinateSets) {
+          if (coords.length < 2) continue;
+          const ifcCoords = coords.map((coord) => [coord.e, coord.n, coord.h]);
+          objects.push({
+            id: featureId,
+            type: featureType,
+            coords: ifcCoords,
+            props,
+            geom: detectIfcGeometryType(ifcCoords)
+          });
+          produced = true;
+        }
+      }
+
+      const pointBlocks = extractXmlBlocks(feature.body, "Point");
+      for (const block of pointBlocks) {
+        const coordinateSets = extractGmlCoordinateSets(block);
+        for (const coords of coordinateSets) {
+          if (!coords.length) continue;
+          const coord = coords[0];
+          objects.push({
+            id: featureId,
+            type: featureType,
+            coords: [[coord.e, coord.n, coord.h]],
+            props,
+            geom: "point"
+          });
+          produced = true;
+        }
+      }
+
+      if (!produced && Object.keys(props).length) {
+        objects.push({
+          id: featureId,
+          type: featureType,
+          coords: [],
+          props,
+          geom: "none"
+        });
+      }
+    }
+
+    return objects;
+  }
+
+  function gmlAttributesToProps(attributes) {
+    const props = {};
+    for (const attribute of Array.isArray(attributes) ? attributes : []) {
+      const label = String(attribute?.label || "").trim();
+      if (!label) continue;
+      props[label] = String(attribute?.value ?? "").trim();
+    }
+    return props;
+  }
+
+  function detectIfcGeometryType(coords) {
+    if (!Array.isArray(coords) || !coords.length) return "none";
+    if (coords.length === 1) return "point";
+    const first = coords[0];
+    const last = coords[coords.length - 1];
+    const closed = Math.abs(first[0] - last[0]) < 1e-4 &&
+      Math.abs(first[1] - last[1]) < 1e-4 &&
+      Math.abs(first[2] - last[2]) < 1e-4;
+    return closed && coords.length >= 4 ? "polygon" : "curve";
   }
 
   function extractGmlFeatureMembers(xml) {
@@ -1496,44 +2118,32 @@
   function isConvertedOutputCurrent(file) {
     const outputs = Array.isArray(file?.existingOutputs) ? file.existingOutputs : [];
     if (!outputs.length) return false;
+    const expectedExtensions = getExpectedOutputExtensions(file);
+    const matchingOutputs = outputs.filter((output) =>
+      expectedExtensions.some((extension) => String(output?.name || "").toLowerCase().endsWith(extension))
+    );
+    if (!matchingOutputs.length) return false;
 
     const sourceTime = parseFileTimestamp(file.modifiedOn);
     if (!sourceTime) return true;
 
-    return outputs.some((output) => {
-      if (output.localConversionCurrent) return true;
+    return matchingOutputs.some((output) => {
       const outputTime = parseFileTimestamp(output.modifiedOn);
       return outputTime != null && outputTime + 1000 >= sourceTime;
     });
   }
 
+  function getExpectedOutputExtensions(file) {
+    const name = String(file?.name || "").toLowerCase();
+    if (name.endsWith(".gml")) {
+      return [".ifc"];
+    }
+    if (name.endsWith(".sos") || name.endsWith(".sosi")) return [".xml"];
+    return [".txt", ".xml"];
+  }
+
   function getPendingKofFiles(files = state.fileList) {
     return (Array.isArray(files) ? files : []).filter((file) => !isConvertedOutputCurrent(file));
-  }
-
-  function getFileConversionState(file) {
-    if (isConvertedOutputCurrent(file)) {
-      return { className: "converted", label: "Konvertering OK" };
-    }
-
-    if (Array.isArray(file?.existingOutputs) && file.existingOutputs.length > 0) {
-      return { className: "outdated", label: "Ny versjon" };
-    }
-
-    return { className: "pending", label: "Venter" };
-  }
-
-  function markFileConverted(file, outName) {
-    if (!file || !outName) return;
-    const outputs = Array.isArray(file.existingOutputs) ? file.existingOutputs : [];
-    file.existingOutputs = [
-      ...outputs.filter((output) => output.name !== outName),
-      {
-        name: outName,
-        modifiedOn: new Date().toISOString(),
-        localConversionCurrent: true
-      }
-    ];
   }
 
   async function refreshKofList() {
@@ -1630,7 +2240,7 @@
     await refreshKofList();
 
     const pendingFiles = getPendingKofFiles();
-    if (!CONFIG.AUTO_CONVERT_ON_OPEN || state.manualSelectionMode || state.autoConvertInProgress || !pendingFiles.length) {
+    if (!CONFIG.AUTO_CONVERT_ON_OPEN || state.autoConvertInProgress || !pendingFiles.length) {
       return;
     }
 
@@ -1654,7 +2264,7 @@
 
     if (!proxyRes.ok || !proxyRes.json) throw new Error(`Proxy svarte med HTTP ${proxyRes.status}`);
     const result = proxyRes.json;
-    if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned KOF/SOSI/GML-fil");
+    if (!result.ok) throw new Error(result.error || result.step || "Kunne ikke laste ned kildefil");
 
     const converted = convertKofFile(result.text || "", result.file?.name || file.name || "output.kof");
     return { ...converted, result };
@@ -1685,14 +2295,12 @@
       state.lastUploadResult = uploadResult;
 
       if (uploadResult.ok) {
-        markFileConverted(file, converted.outName);
-        renderFileList();
         setStatus(`Ferdig: ${converted.outName} er lastet opp til prosjektet`, "success");
         showHint("Den konverterte filen ble automatisk lastet opp tilbake til samme prosjektmappe i Trimble Connect.");
       } else {
         triggerDownload(converted.outName, converted.text);
         setStatus(`Ferdig: ${converted.outName} er lastet ned lokalt`, "success");
-        showHint(`Automatisk opplasting kom ikke helt i mål. Bruk <strong>Last opp til Trimble Connect</strong> for å åpne riktig mappe og laste opp <strong>${escapeHtml(converted.outName)}</strong>.`);
+        showHint(`Automatisk opplasting kom ikke helt i mål. Bruk <strong>Last opp til prosjekt</strong> for å åpne riktig mappe og laste opp <strong>${escapeHtml(converted.outName)}</strong>.`);
       }
 
       setDebug({
@@ -1711,38 +2319,18 @@
     }
   }
 
-  function requestStopConversion() {
-    if (!state.conversionInProgress) return;
-    state.cancelConversionRequested = true;
-    state.manualSelectionMode = true;
-    state.manualSelectedFileIds.clear();
-    setStatus("Stopper etter pÃ¥gÃ¥ende fil...", "working");
-    showHint("Konverteringen stoppes nÃ¥r filen som behandles akkurat nÃ¥ er ferdig. Deretter kan du velge filer manuelt og trykke <strong>Konverter valgte</strong>.");
-    renderFileList();
-    setBusy(state.busy);
-  }
-
-  async function processManualSelectedFiles() {
-    const selectedFiles = state.fileList.filter((file) => state.manualSelectedFileIds.has(file.id));
-    if (!selectedFiles.length) {
-      setStatus("Velg minst en KOF/SOSI/GML-fil fÃ¸rst", "error");
-      return;
-    }
-    await processAllFiles({ source: "manual-selected", files: selectedFiles, skipExisting: false });
-  }
-
   async function processAllFiles(options = {}) {
     try {
       setBusy(true);
       showHint(null, false);
       await ensureReady();
 
-      const candidateFiles = Array.isArray(options.files) ? options.files : state.fileList;
-      if (!candidateFiles.length) {
+      if (!state.fileList.length) {
         setStatus("Ingen filer i listen - trykk Oppdater liste først", "error");
         return;
       }
 
+      const candidateFiles = Array.isArray(options.files) ? options.files : state.fileList;
       const filesToProcess = options.skipExisting === false
         ? candidateFiles
         : getPendingKofFiles(candidateFiles);
@@ -1771,20 +2359,10 @@
         return;
       }
 
-      state.conversionInProgress = true;
-      state.cancelConversionRequested = false;
-      setBusy(true);
-
       const summary = [];
       let count = 0;
-      let cancelled = false;
 
       for (const file of filesToProcess) {
-        if (state.cancelConversionRequested) {
-          cancelled = true;
-          break;
-        }
-
         count += 1;
         setStatus(`Konverterer ${count}/${filesToProcess.length}: ${file.name}...`, "working");
 
@@ -1798,8 +2376,6 @@
 
           if (!uploadResult.ok) {
             triggerDownload(converted.outName, converted.text);
-          } else {
-            markFileConverted(file, converted.outName);
           }
 
           summary.push({
@@ -1813,11 +2389,6 @@
         } catch (err) {
           summary.push({ ok: false, file: file.name, error: err?.message || String(err) });
         }
-
-        if (state.cancelConversionRequested) {
-          cancelled = true;
-          break;
-        }
       }
 
       const okCount = summary.filter((x) => x.ok).length;
@@ -1826,16 +2397,8 @@
       const localDownloadCount = summary.filter((x) => x.ok && !x.uploadOk).length;
       state.lastDownloadName = okCount === 1 ? summary.find((x) => x.ok)?.outName || null : null;
       state.lastUploadResult = okCount === 1 ? summary.find((x) => x.ok)?.uploadResult || null : null;
-      if (!cancelled && options.source === "manual-selected") {
-        state.manualSelectedFileIds.clear();
-      }
-      renderFileList();
 
-      if (cancelled) {
-        state.manualSelectionMode = true;
-        setStatus(`Stoppet etter ${summary.length} av ${filesToProcess.length} fil${filesToProcess.length === 1 ? "" : "er"}`, "working");
-        showHint("Velg en eller flere filer i listen og trykk <strong>Konverter valgte</strong> for Ã¥ fortsette kontrollert.");
-      } else if (failCount === 0) {
+      if (failCount === 0) {
         if (uploadOkCount === okCount) {
           setStatus(`Ferdig! ${okCount} fil${okCount === 1 ? "" : "er"} konvertert og lastet opp${skippedCount ? ` (${skippedCount} hoppet over)` : ""}`, "success");
           showHint(
@@ -1847,8 +2410,8 @@
           setStatus(`Ferdig! ${okCount} fil${okCount === 1 ? "" : "er"} konvertert og lastet ned${skippedCount ? ` (${skippedCount} hoppet over)` : ""}`, "success");
           showHint(
             okCount === 1
-              ? `Automatisk opplasting kom ikke helt i mål. Bruk <strong>Last opp til Trimble Connect</strong> for å åpne riktig mappe og laste opp <strong>${escapeHtml(state.lastDownloadName || "den konverterte filen")}</strong>.`
-              : "Noen automatiske opplastinger kom ikke helt i mål. Bruk <strong>Last opp til Trimble Connect</strong> for å åpne prosjektmappen og laste opp dem som mangler."
+              ? `Automatisk opplasting kom ikke helt i mål. Bruk <strong>Last opp til prosjekt</strong> for å åpne riktig mappe og laste opp <strong>${escapeHtml(state.lastDownloadName || "den konverterte filen")}</strong>.`
+              : "Noen automatiske opplastinger kom ikke helt i mål. Bruk <strong>Last opp til prosjekt</strong> for å åpne prosjektmappen og laste opp dem som mangler."
           );
         }
       } else {
@@ -1856,9 +2419,8 @@
       }
 
       setDebug({
-        action: options.source === "auto-open" ? "autoConvertAllOnOpen" : options.source === "manual-selected" ? "convertSelectedManual" : "convertAll",
+        action: options.source === "auto-open" ? "autoConvertAllOnOpen" : "convertAll",
         total: summary.length,
-        cancelled,
         skippedCount,
         okCount,
         failCount,
@@ -1871,9 +2433,6 @@
       setStatus(`Feil: ${err?.message || String(err)}`, "error");
       setDebug({ error: err?.message || String(err), stack: err?.stack });
     } finally {
-      state.conversionInProgress = false;
-      state.cancelConversionRequested = false;
-      renderFileList();
       setBusy(false);
     }
   }
@@ -1966,9 +2525,9 @@
   }
 
   function wireUi() {
-    ui.refreshBtn.addEventListener("click", () => refreshKofListOnOpen("manual-refresh"));
-    ui.stopBtn.addEventListener("click", requestStopConversion);
-    ui.convertManualBtn.addEventListener("click", processManualSelectedFiles);
+    ui.refreshBtn.addEventListener("click", refreshKofList);
+    ui.convertSelectedBtn.addEventListener("click", processSelectedFile);
+    ui.convertAllBtn.addEventListener("click", processAllFiles);
     ui.localUploadBtn.addEventListener("click", () => ui.localFileInput.click());
     ui.localFileInput.addEventListener("change", (event) => processLocalFile(event.target.files?.[0]));
     ui.projectUploadBtn.addEventListener("click", openProjectUploadExplorer);

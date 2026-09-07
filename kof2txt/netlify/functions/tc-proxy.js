@@ -1040,9 +1040,17 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
   const seedDiagnostics = [];
   const searchFilesByKey = new Map();
 
-  for (const query of [".kof", ".sos", ".sosi", ".gml"]) {
+  const seedQueries = [".kof", ".sos", ".sosi", ".gml"];
+  const seedResults = await Promise.all(seedQueries.map(async (query) => {
     const url = `${base}/search?projectId=${encodeURIComponent(projectId)}&query=${encodeURIComponent(query)}&type=file`;
-    const searchProbe = await fetchJsonWithBearer(url, token);
+    try {
+      return { query, url, searchProbe: await fetchJsonWithBearer(url, token) };
+    } catch (err) {
+      return { query, url, searchProbe: { ok: false, status: 0, text: "", json: null, error: err?.message || String(err) } };
+    }
+  }));
+
+  for (const { query, url, searchProbe } of seedResults) {
     const searchFiles = searchProbe.ok && searchProbe.json
       ? normalizeFilesFromAnyResponse(searchProbe.json).filter((f) => f && f.id && isSourceFileName(f.name))
       : [];
@@ -1057,7 +1065,8 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
       url,
       ok: searchProbe.ok,
       status: searchProbe.status,
-      preview: shortText(searchProbe.text, 400)
+      preview: shortText(searchProbe.text, 400),
+      error: searchProbe.error || null
     });
   }
 
@@ -1067,6 +1076,25 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
       .map((f) => f.parentId || null)
       .filter(Boolean)
   ));
+
+  // A new/empty project commonly has no source files yet. If the search API
+  // answered successfully for all probes, return an empty result now instead
+  // of trying every legacy fallback endpoint and risking a function timeout.
+  const successfulSeedSearches = seedResults.filter(({ searchProbe }) => searchProbe.ok).length;
+  if (!searchFiles.length && successfulSeedSearches === seedQueries.length) {
+    return {
+      ok: true,
+      action: "listProjectKofFiles",
+      project: { id: projectId, location: projectLocation },
+      resolvedBaseUrl: base,
+      source: "search-empty",
+      candidatesTried: seedDiagnostics.length,
+      files: [],
+      convertedFiles: [],
+      diagnostics: seedDiagnostics,
+      sources: []
+    };
+  }
 
   const folderTree = await tryFolderTreeListing({
     token,

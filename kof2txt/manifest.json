@@ -4,5 +4,6 @@
   "icon": "https://kof2txt.netlify.app/icon.png",
   "url": "https://kof2txt.netlify.app/index.html",
   "description": "Convert KOF to TXT or LandXML",
+  "extensionType": ["project"],
   "enabled": true
 }

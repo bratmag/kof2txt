@@ -1077,24 +1077,10 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
       .filter(Boolean)
   ));
 
-  // A new/empty project commonly has no source files yet. If the search API
-  // answered successfully for all probes, return an empty result now instead
-  // of trying every legacy fallback endpoint and risking a function timeout.
-  const successfulSeedSearches = seedResults.filter(({ searchProbe }) => searchProbe.ok).length;
-  if (!searchFiles.length && successfulSeedSearches === seedQueries.length) {
-    return {
-      ok: true,
-      action: "listProjectKofFiles",
-      project: { id: projectId, location: projectLocation },
-      resolvedBaseUrl: base,
-      source: "search-empty",
-      candidatesTried: seedDiagnostics.length,
-      files: [],
-      convertedFiles: [],
-      diagnostics: seedDiagnostics,
-      sources: []
-    };
-  }
+  // Search is only a seed/fallback in the Core API. A successful empty search
+  // does not prove that the project contains no files, so continue to the
+  // project/folder listing candidates below. This is important for new
+  // projects where uploaded files may not be returned by filename search yet.
 
   const folderTree = await tryFolderTreeListing({
     token,

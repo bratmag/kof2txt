@@ -1090,6 +1090,66 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
     initialDiagnostics: seedDiagnostics.map((item) => ({ ...item, seedFolderIds }))
   });
 
+  // Search may not index newly uploaded files yet. In that case start at the
+  // project's real root folder instead of guessing a path such as "/".
+  if (!searchFiles.length) {
+    const projectUrl = `${base}/projects/${encodeURIComponent(projectId)}`;
+    try {
+      const projectProbe = await fetchJsonWithBearer(projectUrl, token);
+      const projectData = projectProbe.json || {};
+      const rootFolderId =
+        projectData.rootFolderId ||
+        projectData.rootId ||
+        projectData.rootFolder?.id ||
+        projectData.data?.rootFolderId ||
+        projectData.data?.rootId ||
+        projectData.data?.rootFolder?.id ||
+        null;
+
+      seedDiagnostics.push({
+        name: "project-root-folder",
+        url: projectUrl,
+        ok: projectProbe.ok,
+        status: projectProbe.status,
+        rootFolderId: rootFolderId ? String(rootFolderId) : null,
+        preview: shortText(projectProbe.text, 400)
+      });
+
+      if (rootFolderId) {
+        const rootTree = await tryFolderTreeListing({
+          token,
+          projectId,
+          projectLocation,
+          seedFolderIds: [String(rootFolderId)],
+          initialDiagnostics: seedDiagnostics
+        });
+
+        if (rootTree.ok && Array.isArray(rootTree.files) && rootTree.files.length) {
+          return {
+            ok: true,
+            action: "listProjectKofFiles",
+            project: { id: projectId, location: projectLocation },
+            resolvedBaseUrl: base,
+            source: rootTree.source,
+            candidatesTried: rootTree.candidatesTried,
+            files: rootTree.files,
+            convertedFiles: rootTree.convertedFiles || [],
+            diagnostics: rootTree.diagnostics,
+            sources: rootTree.sources
+          };
+        }
+      }
+    } catch (err) {
+      seedDiagnostics.push({
+        name: "project-root-folder",
+        url: projectUrl,
+        ok: false,
+        status: 0,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
   if (folderTree.ok && Array.isArray(folderTree.files) && folderTree.files.length) {
     return {
       ok: true,

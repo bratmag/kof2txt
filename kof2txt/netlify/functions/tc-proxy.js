@@ -1107,6 +1107,14 @@ async function tryListProjectFilesCandidates({ token, projectId, projectLocation
 
   const candidates = [
     {
+      name: "folders-root-by-path",
+      url: `${base}/folders/by_path?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent("/")}`
+    },
+    {
+      name: "folders-root-by-empty-path",
+      url: `${base}/folders/by_path?projectId=${encodeURIComponent(projectId)}&path=`
+    },
+    {
       name: "projects-files-recursive",
       url: `${base}/projects/${encodeURIComponent(projectId)}/files?recursive=true`
     },
